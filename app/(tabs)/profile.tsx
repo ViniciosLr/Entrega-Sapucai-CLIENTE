@@ -33,6 +33,12 @@ import {
   User,
   Briefcase,
   MapPin,
+  Gift,
+  TrendingUp,
+  Clock,
+  ChevronRight,
+  Star,
+  Heart,
 } from 'lucide-react-native';
 import { useAuth } from '@/hooks/useAuth';
 import { useProfile } from '@/hooks/useProfile';
@@ -50,6 +56,18 @@ interface ProfileStats {
   last_order_date: string;
   account_type: 'pf' | 'pj';
   cnpj?: string;
+  cashRango_balance: number;
+  cashRango_total_earned: number;
+  cashRango_history: CashRangoTransaction[];
+}
+
+interface CashRangoTransaction {
+  id: string;
+  order_id: string;
+  amount: number;
+  type: 'earned' | 'used';
+  order_value: number;
+  created_at: string;
 }
 
 const formatCPF = (value?: string | null) => {
@@ -131,6 +149,7 @@ export default function DetailedProfileScreen() {
   const [stats, setStats] = useState<ProfileStats | null>(null);
   const [loadingStats, setLoadingStats] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showCashRangoHistory, setShowCashRangoHistory] = useState(false);
 
   const [formData, setFormData] = useState({
     phone: '',
@@ -159,6 +178,11 @@ export default function DetailedProfileScreen() {
     }
   }, [profile]);
 
+  // Função para calcular cashRango (0,10 R$ por compra)
+  const calculateCashRango = (orderValue: number): number => {
+    return 0.10; // 10 centavos fixos por compra
+  };
+
   const fetchProfileStats = async (clientId: string) => {
     try {
       const { data: orders, error } = await supabase
@@ -179,6 +203,23 @@ export default function DetailedProfileScreen() {
         orders
           ?.filter(order => order.status === 'finalizado')
           .reduce((sum, order) => sum + (Number(order.price) || 0), 0) || 0;
+
+      // Buscar transações do cashRango
+      const { data: cashRangoData } = await supabase
+        .from('cashrango_transactions')
+        .select('*')
+        .eq('customer_id', clientId)
+        .order('created_at', { ascending: false });
+
+      const cashRangoTransactions = cashRangoData || [];
+      
+      const cashRangoBalance = cashRangoTransactions.reduce((sum, trans) => {
+        return sum + (trans.type === 'earned' ? trans.amount : -trans.amount);
+      }, 0);
+
+      const cashRangoTotalEarned = cashRangoTransactions
+        .filter(t => t.type === 'earned')
+        .reduce((sum, t) => sum + t.amount, 0);
 
       const merchandiseCounts = orders?.reduce((acc: Record<string, number>, order) => {
         const type = order.merchandise_type || 'Outro';
@@ -216,6 +257,9 @@ export default function DetailedProfileScreen() {
         last_order_date: lastOrderDate,
         account_type: accountType,
         cnpj: profile?.cnpj || undefined,
+        cashRango_balance: cashRangoBalance,
+        cashRango_total_earned: cashRangoTotalEarned,
+        cashRango_history: cashRangoTransactions,
       });
     } catch (error) {
       console.error('Erro ao buscar estatísticas:', error);
@@ -223,6 +267,45 @@ export default function DetailedProfileScreen() {
     } finally {
       setLoadingStats(false);
     }
+  };
+
+  // Função para resgatar cashRango
+  const handleRedeemCashRango = async () => {
+    if (!stats || stats.cashRango_balance <= 0) {
+      Alert.alert('Saldo Insuficiente', 'Você não tem cashRango suficiente para resgatar.');
+      return;
+    }
+
+    Alert.alert(
+      'Resgatar cashRango',
+      `Você tem R$ ${stats.cashRango_balance.toFixed(2)} disponíveis. Deseja resgatar agora?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Resgatar',
+          onPress: async () => {
+            try {
+              const { error } = await supabase
+                .from('cashrango_transactions')
+                .insert({
+                  customer_id: profile?.id,
+                  amount: stats.cashRango_balance,
+                  type: 'used',
+                  order_id: null,
+                  created_at: new Date().toISOString(),
+                });
+
+              if (error) throw error;
+
+              Alert.alert('Sucesso', 'cashRango resgatado com sucesso!');
+              fetchProfileStats(profile?.id || '');
+            } catch (error) {
+              Alert.alert('Erro', 'Não foi possível resgatar o cashRango');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const base64ToUint8Array = (base64: string) => {
@@ -373,8 +456,8 @@ export default function DetailedProfileScreen() {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.loadingContainer}>
-          <LoadingSpinner size="large" color="#2563EB" />
-          <Text style={styles.loadingText}>Carregando perfil...</Text>
+          <LoadingSpinner size="large" color="#FF6B35" />
+          <Text style={styles.loadingText}>Carregando seu perfil...</Text>
         </View>
       </SafeAreaView>
     );
@@ -387,8 +470,9 @@ export default function DetailedProfileScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+        {/* Header com CashRango */}
         <LinearGradient
-          colors={['#1E40AF', '#2563EB', '#3B82F6']}
+          colors={['#FF6B35', '#EC4C43', '#EC4C43']}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.headerGradient}
@@ -410,7 +494,7 @@ export default function DetailedProfileScreen() {
               {editing && (
                 <View style={styles.cameraIconContainer}>
                   <LinearGradient
-                    colors={['#3B82F6', '#2563EB']}
+                    colors={['#FF6B35', '#FF8C42']}
                     style={styles.cameraIcon}
                   >
                     <Camera size={14} color="#FFFFFF" strokeWidth={2.5} />
@@ -420,136 +504,179 @@ export default function DetailedProfileScreen() {
             </TouchableOpacity>
 
             <View style={styles.headerInfo}>
-              <Text style={styles.headerTitle}>{profile?.name || 'Usuário'}</Text>
+              <Text style={styles.headerTitle}>{profile?.name || 'FoodLover'}</Text>
               <Text style={styles.headerSubtitle}>{user?.email}</Text>
+            </View>
+          </View>
 
-              <View style={styles.accountTypeBadge}>
-                <View style={styles.accountTypeIcon}>
-                  {formData.account_type === 'pf' ? (
-                    <User size={12} color="#FFFFFF" />
-                  ) : (
-                    <Building size={12} color="#FFFFFF" />
-                  )}
+          {/* Card do cashRango */}
+          <View style={styles.cashRangoCard}>
+            <LinearGradient
+              colors={['#1A1A2E', '#16213E']}
+              style={styles.cashRangoGradient}
+            >
+              <View style={styles.cashRangoHeader}>
+                <View style={styles.cashRangoLogo}>
+                  <Gift size={20} color="#FF6B35" />
+                  <Text style={styles.cashRangoTitle}>cashRango</Text>
                 </View>
-                <Text style={styles.accountTypeText}>
-                  {formData.account_type === 'pf' ? 'Pessoa Física' : 'Pessoa Jurídica'}
+                <TouchableOpacity 
+                  style={styles.historyButton}
+                  onPress={() => setShowCashRangoHistory(!showCashRangoHistory)}
+                >
+                  <Clock size={16} color="#FF6B35" />
+                  <Text style={styles.historyButtonText}>Histórico</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.cashRangoBalance}>
+                <Text style={styles.cashRangoBalanceLabel}>Saldo disponível</Text>
+                <Text style={styles.cashRangoBalanceValue}>
+                  R$ {stats?.cashRango_balance.toFixed(2) || '0.00'}
                 </Text>
               </View>
-            </View>
+
+              <View style={styles.cashRangoInfo}>
+                <View style={styles.cashRangoInfoItem}>
+                  <TrendingUp size={16} color="#10B981" />
+                  <Text style={styles.cashRangoInfoText}>
+                    Total acumulado: R$ {stats?.cashRango_total_earned.toFixed(2) || '0.00'}
+                  </Text>
+                </View>
+                <Text style={styles.cashRangoRule}>
+                  Ganhe R$ 0,10 a cada compra realizada!
+                </Text>
+              </View>
+
+              {stats && stats.cashRango_balance > 0 && (
+                <TouchableOpacity
+                  style={styles.redeemButton}
+                  onPress={handleRedeemCashRango}
+                >
+                  <Text style={styles.redeemButtonText}>Resgatar Saldo</Text>
+                </TouchableOpacity>
+              )}
+            </LinearGradient>
           </View>
         </LinearGradient>
 
         <View style={styles.content}>
+          {/* Histórico do cashRango */}
+          {showCashRangoHistory && stats?.cashRango_history && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Histórico cashRango</Text>
+              {stats.cashRango_history.length === 0 ? (
+                <Text style={styles.emptyText}>Nenhuma transação ainda</Text>
+              ) : (
+                stats.cashRango_history.map((transaction) => (
+                  <View key={transaction.id} style={styles.transactionItem}>
+                    <View style={styles.transactionIcon}>
+                      {transaction.type === 'earned' ? (
+                        <Gift size={20} color="#10B981" />
+                      ) : (
+                        <DollarSign size={20} color="#EF4444" />
+                      )}
+                    </View>
+                    <View style={styles.transactionInfo}>
+                      <Text style={styles.transactionTitle}>
+                        {transaction.type === 'earned' ? 'Ganhou' : 'Resgatou'} cashRango
+                      </Text>
+                      <Text style={styles.transactionDate}>
+                        {new Date(transaction.created_at).toLocaleDateString('pt-BR')}
+                      </Text>
+                    </View>
+                    <Text style={[
+                      styles.transactionAmount,
+                      { color: transaction.type === 'earned' ? '#10B981' : '#EF4444' }
+                    ]}>
+                      {transaction.type === 'earned' ? '+' : '-'} R$ {transaction.amount.toFixed(2)}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </View>
+          )}
+
+          {/* Favoritos rápidos */}
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <View>
-                <Text style={styles.sectionTitle}>Estatísticas</Text>
-                <Text style={styles.sectionSubtitle}>Histórico de pedidos</Text>
+              <View style={styles.sectionTitleRow}>
+                <Heart size={20} color="#FF6B35" />
+                <Text style={styles.sectionTitle}>Seus Favoritos</Text>
+              </View>
+            </View>
+            
+            <View style={styles.favoritesGrid}>
+              <TouchableOpacity style={styles.favoriteCard}>
+                <LinearGradient
+                  colors={['#FF6B35', '#FF8C42']}
+                  style={styles.favoriteIcon}
+                >
+                  <Star size={20} color="#FFFFFF" />
+                </LinearGradient>
+                <Text style={styles.favoriteName}>{stats?.favorite_merchandise || 'Adicionar'}</Text>
+                <Text style={styles.favoriteLabel}>Pedido preferido</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.favoriteCard}>
+                <LinearGradient
+                  colors={['#10B981', '#059669']}
+                  style={styles.favoriteIcon}
+                >
+                  <MapPin size={20} color="#FFFFFF" />
+                </LinearGradient>
+                <Text style={styles.favoriteName}>{stats?.most_frequent_bairro || 'Adicionar'}</Text>
+                <Text style={styles.favoriteLabel}>Bairro frequente</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Estatísticas simplificadas */}
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleRow}>
+                <ShoppingBag size={20} color="#FF6B35" />
+                <Text style={styles.sectionTitle}>Suas Estatísticas</Text>
               </View>
             </View>
 
             {stats && (
-              <>
-                <View style={styles.statsGrid}>
-                  <View style={styles.statCard}>
-                    <LinearGradient
-                      colors={['#10B981', '#059669']}
-                      style={styles.statCardGradient}
-                    >
-                      <ShoppingBag size={24} color="#FFFFFF" />
-                    </LinearGradient>
-                    <Text style={styles.statValue}>{stats.total_orders}</Text>
-                    <Text style={styles.statLabel}>Total de Pedidos</Text>
-                  </View>
-
-                  <View style={styles.statCard}>
-                    <LinearGradient
-                      colors={['#3B82F6', '#2563EB']}
-                      style={styles.statCardGradient}
-                    >
-                      <CheckCircle size={24} color="#FFFFFF" />
-                    </LinearGradient>
-                    <Text style={styles.statValue}>{stats.completed_orders}</Text>
-                    <Text style={styles.statLabel}>Concluídos</Text>
-                  </View>
-
-                  <View style={styles.statCard}>
-                    <LinearGradient
-                      colors={['#EF4444', '#DC2626']}
-                      style={styles.statCardGradient}
-                    >
-                      <XCircle size={24} color="#FFFFFF" />
-                    </LinearGradient>
-                    <Text style={styles.statValue}>{stats.cancelled_orders}</Text>
-                    <Text style={styles.statLabel}>Cancelados</Text>
-                  </View>
-
-                  <View style={styles.statCard}>
-                    <LinearGradient
-                      colors={['#8B5CF6', '#7C3AED']}
-                      style={styles.statCardGradient}
-                    >
-                      <Percent size={24} color="#FFFFFF" />
-                    </LinearGradient>
-                    <Text style={styles.statValue}>{successRate}%</Text>
-                    <Text style={styles.statLabel}>Taxa de Sucesso</Text>
-                  </View>
+              <View style={styles.statsGrid}>
+                <View style={styles.statCard}>
+                  <Text style={styles.statValue}>{stats.total_orders}</Text>
+                  <Text style={styles.statLabel}>Pedidos</Text>
                 </View>
 
-                <View style={styles.additionalStats}>
-                  <View style={styles.additionalStatRowSingle}>
-                    <View style={styles.additionalStatItemSingle}>
-                      <DollarSign size={20} color="#059669" />
-                      <View style={styles.additionalStatText}>
-                        <Text style={styles.additionalStatLabel}>Total Gasto</Text>
-                        <Text style={styles.additionalStatValue}>
-                          R$ {stats.total_spent.toFixed(2)}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-
-                  <View style={styles.additionalStatRow}>
-                    <View style={styles.additionalStatItem}>
-                      <Package size={20} color="#EA580C" />
-                      <View style={styles.additionalStatText}>
-                        <Text style={styles.additionalStatLabel}>Pedido Preferido</Text>
-                        <Text style={styles.additionalStatValue}>
-                          {stats.favorite_merchandise}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.additionalStatItem}>
-                      <MapPin size={20} color="#9333EA" />
-                      <View style={styles.additionalStatText}>
-                        <Text style={styles.additionalStatLabel}>Bairro Mais Frequente</Text>
-                        <Text style={styles.additionalStatValue}>
-                          {stats.most_frequent_bairro}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-
-                  <View style={styles.additionalStatRowSingle}>
-                    <View style={styles.additionalStatItemSingle}>
-                      <Calendar size={20} color="#DC2626" />
-                      <View style={styles.additionalStatText}>
-                        <Text style={styles.additionalStatLabel}>Último Pedido</Text>
-                        <Text style={styles.additionalStatValue}>
-                          {stats.last_order_date}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
+                <View style={styles.statCard}>
+                  <Text style={styles.statValue}>{stats.completed_orders}</Text>
+                  <Text style={styles.statLabel}>Concluídos</Text>
                 </View>
-              </>
+
+                <View style={styles.statCard}>
+                  <Text style={styles.statValue}>{successRate}%</Text>
+                  <Text style={styles.statLabel}>Sucesso</Text>
+                </View>
+
+                <View style={styles.statCard}>
+                  <Text style={styles.statValue}>
+                    {new Date(stats.last_order_date).toLocaleDateString('pt-BR', { 
+                      day: '2-digit', 
+                      month: '2-digit' 
+                    })}
+                  </Text>
+                  <Text style={styles.statLabel}>Último pedido</Text>
+                </View>
+              </View>
             )}
           </View>
 
+          {/* Informações Pessoais */}
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Informações Pessoais</Text>
+              <View style={styles.sectionTitleRow}>
+                <UserIcon size={20} color="#FF6B35" />
+                <Text style={styles.sectionTitle}>Informações Pessoais</Text>
+              </View>
 
               <TouchableOpacity
                 style={[styles.editButton, editing && styles.editButtonActive]}
@@ -563,7 +690,7 @@ export default function DetailedProfileScreen() {
                   </>
                 ) : (
                   <>
-                    <Edit3 size={16} color="#2563EB" strokeWidth={2.5} />
+                    <Edit3 size={16} color="#FF6B35" strokeWidth={2.5} />
                     <Text style={styles.editButtonText}>Editar</Text>
                   </>
                 )}
@@ -571,55 +698,11 @@ export default function DetailedProfileScreen() {
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Tipo de Conta</Text>
-              {editing ? (
-                <TouchableOpacity
-                  style={styles.accountTypeToggle}
-                  onPress={toggleAccountType}
-                  activeOpacity={0.8}
-                >
-                  <LinearGradient
-                    colors={
-                      formData.account_type === 'pf'
-                        ? ['#2563EB', '#1D4ED8']
-                        : ['#059669', '#047857']
-                    }
-                    style={styles.accountTypeToggleButton}
-                  >
-                    <View style={styles.accountTypeToggleIcon}>
-                      {formData.account_type === 'pf' ? (
-                        <User size={20} color="#FFFFFF" />
-                      ) : (
-                        <Building size={20} color="#FFFFFF" />
-                      )}
-                    </View>
-                    <Text style={styles.accountTypeToggleText}>
-                      {formData.account_type === 'pf' ? 'Pessoa Física' : 'Pessoa Jurídica'}
-                    </Text>
-                  </LinearGradient>
-                </TouchableOpacity>
-              ) : (
-                <View style={styles.infoCard}>
-                  <View style={styles.iconCircle}>
-                    {formData.account_type === 'pf' ? (
-                      <User size={18} color="#2563EB" />
-                    ) : (
-                      <Building size={18} color="#059669" />
-                    )}
-                  </View>
-                  <Text style={styles.infoText}>
-                    {formData.account_type === 'pf' ? 'Pessoa Física' : 'Pessoa Jurídica'}
-                  </Text>
-                </View>
-              )}
-            </View>
-
-            <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>Nome completo</Text>
               {editing ? (
                 <View style={styles.textInputWrapper}>
                   <View style={styles.iconCircle}>
-                    <UserIcon size={18} color="#2563EB" strokeWidth={2} />
+                    <UserIcon size={18} color="#FF6B35" strokeWidth={2} />
                   </View>
                   <TextInput
                     style={styles.textInput}
@@ -632,7 +715,7 @@ export default function DetailedProfileScreen() {
               ) : (
                 <View style={styles.infoCard}>
                   <View style={styles.iconCircle}>
-                    <UserIcon size={18} color="#2563EB" strokeWidth={2} />
+                    <UserIcon size={18} color="#FF6B35" strokeWidth={2} />
                   </View>
                   <Text style={styles.infoText}>{profile?.name || 'Não informado'}</Text>
                 </View>
@@ -645,7 +728,7 @@ export default function DetailedProfileScreen() {
                 {editing ? (
                   <View style={styles.textInputWrapper}>
                     <View style={styles.iconCircle}>
-                      <CreditCard size={18} color="#2563EB" strokeWidth={2} />
+                      <CreditCard size={18} color="#FF6B35" strokeWidth={2} />
                     </View>
                     <TextInput
                       style={styles.textInput}
@@ -664,7 +747,7 @@ export default function DetailedProfileScreen() {
                 ) : (
                   <View style={styles.infoCard}>
                     <View style={styles.iconCircle}>
-                      <CreditCard size={18} color="#2563EB" strokeWidth={2} />
+                      <CreditCard size={18} color="#FF6B35" strokeWidth={2} />
                     </View>
                     <Text style={styles.infoText}>
                       {formatCPF(profile?.cpf) || 'CPF não informado'}
@@ -714,7 +797,7 @@ export default function DetailedProfileScreen() {
               {editing ? (
                 <View style={styles.textInputWrapper}>
                   <View style={styles.iconCircle}>
-                    <Phone size={18} color="#2563EB" strokeWidth={2} />
+                    <Phone size={18} color="#FF6B35" strokeWidth={2} />
                   </View>
                   <TextInput
                     style={styles.textInput}
@@ -728,25 +811,13 @@ export default function DetailedProfileScreen() {
               ) : (
                 <View style={styles.infoCard}>
                   <View style={styles.iconCircle}>
-                    <Phone size={18} color="#2563EB" strokeWidth={2} />
+                    <Phone size={18} color="#FF6B35" strokeWidth={2} />
                   </View>
                   <Text style={styles.infoText}>
                     {formatPhone(profile?.phone) || 'Não informado'}
                   </Text>
                 </View>
               )}
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Cidade</Text>
-              <View style={styles.infoCard}>
-                <View style={styles.iconCircle}>
-                  <MapPin size={18} color="#2563EB" strokeWidth={2} />
-                </View>
-                <Text style={styles.infoText}>
-                  {profile?.city || 'Não informada'}
-                </Text>
-              </View>
             </View>
 
             {editing && (
@@ -757,7 +828,7 @@ export default function DetailedProfileScreen() {
                 disabled={saving}
               >
                 <LinearGradient
-                  colors={['#059669', '#10B981', '#34D399']}
+                  colors={['#FF6B35', '#FF8C42', '#FFA751']}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                   style={styles.saveButton}
@@ -771,9 +842,8 @@ export default function DetailedProfileScreen() {
             )}
           </View>
 
+          {/* Configurações */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Configurações</Text>
-
             <TouchableOpacity
               style={styles.menuItem}
               onPress={handlePrivacyPolicy}
@@ -783,9 +853,11 @@ export default function DetailedProfileScreen() {
                 <Shield size={20} color="#64748B" strokeWidth={2} />
               </View>
               <Text style={styles.menuItemText}>Privacidade e Segurança</Text>
+              <ChevronRight size={20} color="#CBD5E1" />
             </TouchableOpacity>
           </View>
 
+          {/* Sair */}
           <View style={styles.section}>
             <TouchableOpacity
               style={styles.signOutButton}
@@ -798,15 +870,6 @@ export default function DetailedProfileScreen() {
               <Text style={styles.signOutText}>Sair da Conta</Text>
             </TouchableOpacity>
           </View>
-
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>
-              ID do Usuário: {user?.id?.substring(0, 8)}...
-            </Text>
-            <Text style={styles.footerText}>
-              Desde: {new Date(profile?.created_at || Date.now()).toLocaleDateString('pt-BR')}
-            </Text>
-          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -816,17 +879,17 @@ export default function DetailedProfileScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#2563EB',
+    backgroundColor: '#FF6B35',
   },
   container: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#FFF5F0',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#FFF5F0',
   },
   loadingText: {
     marginTop: 16,
@@ -836,46 +899,47 @@ const styles = StyleSheet.create({
   },
   headerGradient: {
     paddingTop: 34,
-    paddingBottom: 20,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
-    shadowColor: '#1E40AF',
+    paddingBottom: 30,
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
+    shadowColor: '#FF6B35',
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.22,
+    shadowOpacity: 0.3,
     shadowRadius: 12,
-    elevation: 6,
+    elevation: 8,
   },
   header: {
     alignItems: 'center',
     paddingHorizontal: 20,
+    marginBottom: 20,
   },
   avatarContainer: {
     position: 'relative',
     marginBottom: 12,
   },
   avatarImage: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     borderWidth: 3,
-    borderColor: 'rgba(255, 255, 255, 0.28)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   avatarPlaceholder: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 3,
-    borderColor: 'rgba(255, 255, 255, 0.28)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   cameraIconContainer: {
     position: 'absolute',
     bottom: -2,
     right: -2,
     borderRadius: 14,
-    shadowColor: '#3B82F6',
+    shadowColor: '#FF6B35',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.35,
     shadowRadius: 8,
@@ -894,49 +958,115 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: '700',
     color: '#FFFFFF',
     marginBottom: 4,
     letterSpacing: -0.3,
-    textAlign: 'center',
   },
   headerSubtitle: {
     fontSize: 13,
-    color: '#DBEAFE',
+    color: '#FFE4D6',
     fontWeight: '400',
-    marginBottom: 10,
   },
-  accountTypeBadge: {
+  cashRangoCard: {
+    marginHorizontal: 20,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 10,
+    overflow: 'hidden',
+  },
+  cashRangoGradient: {
+    padding: 20,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 53, 0.3)',
+  },
+  cashRangoHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  cashRangoLogo: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 18,
-    gap: 6,
+    gap: 8,
   },
-  accountTypeIcon: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+  cashRangoTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#FF6B35',
+    letterSpacing: -0.5,
+  },
+  historyButton: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 107, 53, 0.1)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 4,
   },
-  accountTypeText: {
-    fontSize: 11,
-    color: '#FFFFFF',
+  historyButtonText: {
+    fontSize: 12,
+    color: '#FF6B35',
     fontWeight: '600',
+  },
+  cashRangoBalance: {
+    marginBottom: 16,
+  },
+  cashRangoBalanceLabel: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginBottom: 4,
+  },
+  cashRangoBalanceValue: {
+    fontSize: 36,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -1,
+  },
+  cashRangoInfo: {
+    gap: 8,
+  },
+  cashRangoInfoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  cashRangoInfoText: {
+    fontSize: 14,
+    color: '#D1D5DB',
+  },
+  cashRangoRule: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontStyle: 'italic',
+  },
+  redeemButton: {
+    marginTop: 16,
+    backgroundColor: '#FF6B35',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  redeemButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   content: {
     padding: 20,
-    paddingTop: 20,
+    paddingTop: 24,
   },
   section: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 24,
+    borderRadius: 20,
+    padding: 20,
     marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -948,243 +1078,219 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
+  },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   sectionTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     color: '#1E293B',
     letterSpacing: -0.3,
   },
-  sectionSubtitle: {
+  emptyText: {
     fontSize: 14,
-    color: '#64748B',
-    marginTop: 4,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    paddingVertical: 20,
   },
-  editButton: {
+  transactionItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: '#EFF6FF',
-    gap: 6,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    gap: 12,
   },
-  editButtonActive: {
-    backgroundColor: '#FEF2F2',
-  },
-  editButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#2563EB',
-  },
-  editButtonTextCancel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#EF4444',
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    marginBottom: 24,
-  },
-  statCard: {
-    width: '48%',
-    alignItems: 'center',
+  transactionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  statCardGradient: {
+  transactionInfo: {
+    flex: 1,
+  },
+  transactionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  transactionDate: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  transactionAmount: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  favoritesGrid: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  favoriteCard: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#FFF5F0',
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#FFE4D6',
+  },
+  favoriteIcon: {
     width: 48,
     height: 48,
     borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
+    marginBottom: 8,
+  },
+  favoriteName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1E293B',
+    textAlign: 'center',
+  },
+  favoriteLabel: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 4,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  statCard: {
+    alignItems: 'center',
+    flex: 1,
+    paddingVertical: 12,
   },
   statValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
+    fontSize: 20,
+    fontWeight: '700',
     color: '#1E293B',
     marginBottom: 4,
   },
   statLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#64748B',
-    textAlign: 'center',
   },
-  additionalStats: {
-    marginTop: 16,
-  },
-  additionalStatRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  additionalStatRowSingle: {
-    marginBottom: 16,
-  },
-  additionalStatItem: {
+  editButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    flex: 1,
-    marginHorizontal: 4,
-    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#FFF5F0',
+    gap: 4,
   },
-  additionalStatItemSingle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    gap: 12,
+  editButtonActive: {
+    backgroundColor: '#FEF2F2',
   },
-  additionalStatText: {
-    flex: 1,
-  },
-  additionalStatLabel: {
-    fontSize: 12,
-    color: '#64748B',
-    marginBottom: 4,
-  },
-  additionalStatValue: {
-    fontSize: 16,
+  editButtonText: {
+    fontSize: 13,
     fontWeight: '600',
-    color: '#1E293B',
+    color: '#FF6B35',
+  },
+  editButtonTextCancel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#EF4444',
   },
   inputGroup: {
-    marginBottom: 20,
+    marginBottom: 16,
   },
   inputLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: '#475569',
-    marginBottom: 10,
-    letterSpacing: 0.2,
+    marginBottom: 8,
   },
   textInputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#3B82F6',
+    borderWidth: 1.5,
+    borderColor: '#FF6B35',
     borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 4,
-    backgroundColor: '#F8FAFC',
-    gap: 12,
+    paddingHorizontal: 14,
+    backgroundColor: '#FFF5F0',
+    gap: 10,
   },
   textInput: {
     flex: 1,
-    fontSize: 16,
+    fontSize: 15,
     color: '#1E293B',
     paddingVertical: 10,
   },
   infoCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    backgroundColor: '#FFF5F0',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    gap: 12,
+    borderWidth: 1,
+    borderColor: '#FFE4D6',
+    gap: 10,
   },
   iconCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#EFF6FF',
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#FFE4D6',
     alignItems: 'center',
     justifyContent: 'center',
   },
   infoText: {
-    fontSize: 16,
+    fontSize: 15,
     color: '#1E293B',
     flex: 1,
     fontWeight: '500',
   },
-  accountTypeToggle: {
-    marginBottom: 20,
-  },
-  accountTypeToggleButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    gap: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  accountTypeToggleIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  accountTypeToggleText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    flex: 1,
-  },
   saveButtonWrapper: {
-    marginTop: 12,
+    marginTop: 20,
     borderRadius: 12,
-    shadowColor: '#059669',
+    shadowColor: '#FF6B35',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 12,
     elevation: 6,
+    overflow: 'hidden',
   },
   saveButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 16,
-    borderRadius: 12,
-    gap: 10,
+    paddingVertical: 14,
+    gap: 8,
   },
   saveButtonText: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
     color: '#FFFFFF',
-    letterSpacing: 0.2,
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
-    gap: 14,
+    paddingVertical: 12,
+    gap: 12,
   },
   menuIconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: '#F1F5F9',
     alignItems: 'center',
     justifyContent: 'center',
   },
   menuItemText: {
-    fontSize: 16,
+    fontSize: 15,
     color: '#1E293B',
     fontWeight: '500',
     flex: 1,
@@ -1193,36 +1299,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 16,
-    gap: 12,
+    paddingVertical: 14,
+    gap: 10,
     backgroundColor: '#FEF2F2',
     borderRadius: 12,
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: '#FECACA',
   },
   signOutIconCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: '#FEE2E2',
     alignItems: 'center',
     justifyContent: 'center',
   },
   signOutText: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
     color: '#DC2626',
-    letterSpacing: 0.1,
-  },
-  footer: {
-    alignItems: 'center',
-    padding: 20,
-    marginTop: 8,
-  },
-  footerText: {
-    fontSize: 12,
-    color: '#9CA3AF',
-    textAlign: 'center',
-    marginBottom: 4,
   },
 });

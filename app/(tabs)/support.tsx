@@ -98,22 +98,6 @@ export default function SupportScreen() {
   if (!ticketStatus && !loading) {
     return (
       <View style={styles.container}>
-        <LinearGradient
-          colors={['#DC2626', '#EA580C', '#F97316']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.headerGradient}>
-          <View style={styles.header}>
-            <View style={styles.headerIconCircle}>
-              <MessageCircle size={24} color="#FFFFFF" strokeWidth={2.5} />
-            </View>
-            <View style={styles.headerTextContainer}>
-              <Text style={styles.headerTitle}>Suporte Cliente</Text>
-              <Text style={styles.headerSubtitle}>Central de Ajuda</Text>
-            </View>
-          </View>
-        </LinearGradient>
-        
         <View style={styles.centerContent}>
           <View style={styles.emptyIconWrapper}>
             <MessageCircle size={56} color="#EA580C" strokeWidth={1.5} />
@@ -154,45 +138,33 @@ export default function SupportScreen() {
   // TELA DO CHAT
   return (
     <View style={styles.container}>
-      <LinearGradient
-        colors={['#DC2626', '#EA580C', '#F97316']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.headerGradient}>
-        <View style={styles.header}>
-          <View style={styles.headerIconCircle}>
-            <MessageCircle size={24} color="#FFFFFF" strokeWidth={2.5} />
-          </View>
-          <View style={styles.headerTextContainer}>
-            <Text style={styles.headerTitle}>Suporte Cliente</Text>
-            <Text style={styles.headerSubtitle}>
-              {ticketStatus === 'pendente' ? 'Aguardando Aprovação' : 
-               ticketStatus === 'ativo' ? 'Chat Aberto' : 
-               'Chamado Encerrado'}
-            </Text>
-          </View>
-          {ticketStatus && (
-            <View style={[
-              styles.statusBadge,
-              ticketStatus === 'ativo' && styles.statusBadgeActive,
-              ticketStatus === 'pendente' && styles.statusBadgePending,
-              ticketStatus === 'resolvido' && styles.statusBadgeResolved
-            ]}>
-              <Text style={styles.statusBadgeText}>
-                {ticketStatus === 'pendente' ? 'Pendente' : 
-                 ticketStatus === 'ativo' ? 'Ativo' : 
-                 'Resolvido'}
-              </Text>
-            </View>
-          )}
-        </View>
-      </LinearGradient>
-
       <KeyboardAvoidingView 
         style={{ flex: 1 }} 
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}>
         
+        {/* Status do Suporte - Header Simplificado */}
+        <View style={styles.statusHeader}>
+          <View style={styles.statusHeaderContent}>
+            <MessageCircle size={20} color="#EA580C" strokeWidth={2} />
+            <Text style={styles.statusHeaderTitle}>Suporte</Text>
+            {ticketStatus && (
+              <View style={[
+                styles.statusBadge,
+                ticketStatus === 'ativo' && styles.statusBadgeActive,
+                ticketStatus === 'pendente' && styles.statusBadgePending,
+                ticketStatus === 'resolvido' && styles.statusBadgeResolved
+              ]}>
+                <Text style={styles.statusBadgeText}>
+                  {ticketStatus === 'pendente' ? 'Pendente' : 
+                   ticketStatus === 'ativo' ? 'Ativo' : 
+                   'Resolvido'}
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
+
         <ScrollView
           ref={scrollViewRef}
           style={styles.messagesContainer}
@@ -328,70 +300,48 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontWeight: '500',
   },
-  headerGradient: {
-    paddingTop: 60, 
-    paddingBottom: 28,
+  // Status Header simplificado
+  statusHeader: {
+    paddingTop: Platform.OS === 'ios' ? 50 : 40,
+    paddingBottom: 12,
     paddingHorizontal: 20,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
-    shadowColor: '#DC2626',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    elevation: 8,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
-  header: {
+  statusHeaderContent: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
   },
-  headerIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-  },
-  headerTextContainer: {
-    marginLeft: 14,
+  statusHeaderTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1E293B',
     flex: 1,
-  },
-  headerTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 2,
-    letterSpacing: -0.3,
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    color: '#FED7AA',
-    fontWeight: '400',
   },
   statusBadge: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
-    borderWidth: 1.5,
+    borderWidth: 1,
   },
   statusBadgeActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-    borderColor: 'rgba(255, 255, 255, 0.4)',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderColor: '#10B981',
   },
   statusBadgePending: {
-    backgroundColor: 'rgba(251, 191, 36, 0.2)',
-    borderColor: 'rgba(255, 255, 255, 0.4)',
+    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+    borderColor: '#FBBF24',
   },
   statusBadgeResolved: {
-    backgroundColor: 'rgba(148, 163, 184, 0.2)',
-    borderColor: 'rgba(255, 255, 255, 0.4)',
+    backgroundColor: 'rgba(148, 163, 184, 0.1)',
+    borderColor: '#94A3B8',
   },
   statusBadgeText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E293B',
   },
   centerContent: {
     flex: 1,

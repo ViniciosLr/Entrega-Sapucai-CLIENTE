@@ -5,13 +5,13 @@ const GOOGLE_MAPS_API_KEY =
 
 export default {
   expo: {
-    name: "Sapucaí Entrega Cliente",
+    name: "BoraRangar",
     slug: "santaritaentrega-cliente-",
-    version: "2.03.13",
+    version: "5.05.19",
     orientation: "portrait",
 
     // ÍCONE DO APP
-    icon: "./assets/images/icon.png",
+    icon: "./assets/images/adaptive-icon.png",
 
     scheme: "familiamotoboy",
     userInterfaceStyle: "automatic",
@@ -33,7 +33,7 @@ export default {
 
     android: {
       package: "com.seuusuario.sapucaientrega",
-      versionCode: 2122,
+      versionCode: 2126,
 
       permissions: [
         "ACCESS_FINE_LOCATION",
@@ -42,7 +42,7 @@ export default {
       ],
 
       adaptiveIcon: {
-        foregroundImage: "./assets/images/icon.png",
+        foregroundImage: "./assets/images/adaptive-icon.png",
         backgroundColor: "#ffffff"
       },
 

@@ -1,3 +1,4 @@
+// app/order/[id].tsx
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -14,30 +15,30 @@ import {
   KeyboardAvoidingView,
   TextInput,
   Image,
+  Animated,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import {
   ArrowLeft,
   MapPin,
-  User,
   Clock,
   Package,
   MessageCircle,
-  Phone,
   CircleCheck as CheckCircle,
   Circle as XCircle,
-  Loader,
   TriangleAlert as AlertTriangle,
   Bike,
-  DollarSign,
   Navigation,
   Map,
-  BarChart,
   Shield,
-  Timer,
   Send,
-  X,
   Star,
+  ChefHat,
+  ShoppingBag,
+  Home,
+  Store,
+  Timer,
+  User,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -49,6 +50,7 @@ interface OrderDetails {
   id: string;
   customer_id: string;
   motoboy_id?: string;
+  commerce_id?: string;
   merchandise_type: string;
   pickup_address: string;
   delivery_address: string;
@@ -58,14 +60,15 @@ interface OrderDetails {
   price: number;
   platform_fee: number;
   distance_km: number;
-  status: 'criado' | 'aceito' | 'em_andamento' | 'finalizado' | 'cancelado';
-  is_reserved?: boolean;
+  status: 'criado' | 'aceito' | 'pronto' | 'aguardando_motoboy' | 'motoboy_a_caminho' | 'em_andamento' | 'finalizado' | 'cancelado';
   created_at: string;
   updated_at: string;
   accepted_at?: string;
+  ready_at?: string;
   picked_up_at?: string;
   completed_at?: string;
   cancelled_at?: string;
+  motoboy_assigned_at?: string;
   payment_method: string;
   pickup_lat: number;
   pickup_lng: number;
@@ -83,6 +86,11 @@ interface OrderDetails {
     slow_deliveries?: number;
     driver_photo_url?: string;
   };
+  commerce?: {
+    name: string;
+    phone: string;
+    image_url?: string;
+  };
   motoboy_rating?: {
     id: string;
     is_fast: boolean;
@@ -99,63 +107,130 @@ interface ChatMessage {
   isCurrentUser?: boolean;
 }
 
-// Configuração de status
-const STATUS_CONFIG = {
-  criado: {
-    label: 'Pedido Criado',
+// ========================================
+// PIPELINE DE STATUS — CORRIGIDO COM TODOS OS STATUS
+// ========================================
+const DELIVERY_STEPS = [
+  {
+    key: 'criado',
+    label: 'Pedido Enviado ao Comércio',
+    sublabel: 'Aguardando o estabelecimento aceitar seu pedido',
+    icon: Store,
     color: '#6B7280',
-    icon: Clock,
-    description: 'Aguardando motoboy aceitar',
-    step: 1,
+    statusCondition: (order: OrderDetails) => order.status === 'criado',
   },
-  aceito: {
-    label: 'Pedido Aceito',
-    color: '#2563EB',
-    icon: User,
-    description: 'Motoboy a caminho da retirada',
-    step: 2,
+  {
+    key: 'em_preparo',
+    label: 'Em Preparo',
+    sublabel: 'O estabelecimento está preparando seu pedido',
+    icon: ChefHat,
+    color: '#F59E0B',
+    statusCondition: (order: OrderDetails) => order.status === 'aceito',
   },
-  em_andamento: {
-    label: 'Em Entrega',
-    color: '#EA580C',
+  {
+    key: 'pronto',
+    label: 'Pedido Pronto',
+    sublabel: 'Seu pedido está pronto, aguardando motoboy',
+    icon: ShoppingBag,
+    color: '#8B5CF6',
+    statusCondition: (order: OrderDetails) => order.status === 'pronto',
+  },
+  {
+    key: 'aguardando_motoboy',
+    label: 'Buscando Motoboy',
+    sublabel: 'Procurando um entregador disponível...',
     icon: Bike,
-    description: 'Motoboy a caminho da entrega',
-    step: 3,
+    color: '#3B82F6',
+    statusCondition: (order: OrderDetails) => order.status === 'aguardando_motoboy',
   },
-  finalizado: {
-    label: 'Concluído',
+  {
+    key: 'motoboy_a_caminho',
+    label: 'Motoboy a Caminho do Estabelecimento',
+    sublabel: 'O entregador está indo buscar seu pedido',
+    icon: Bike,
+    color: '#2563EB',
+    statusCondition: (order: OrderDetails) => 
+      order.status === 'motoboy_a_caminho' && !order.picked_up_at,
+  },
+  {
+    key: 'pedido_retirado',
+    label: 'Pedido Retirado',
+    sublabel: 'O entregador coletou seu pedido',
+    icon: Package,
+    color: '#10B981',
+    statusCondition: (order: OrderDetails) =>
+      order.status === 'em_andamento' && !!order.picked_up_at,
+  },
+  {
+    key: 'deslocando_entrega',
+    label: 'A Caminho da Sua Residência',
+    sublabel: 'O entregador está indo até você',
+    icon: Home,
     color: '#059669',
+    statusCondition: (order: OrderDetails) =>
+      order.status === 'em_andamento' && !!order.picked_up_at,
+  },
+  {
+    key: 'entregue',
+    label: 'Pedido Entregue!',
+    sublabel: 'Aproveite seu pedido!',
     icon: CheckCircle,
-    description: 'Pedido entregue com sucesso',
-    step: 4,
+    color: '#22C55E',
+    statusCondition: (order: OrderDetails) => order.status === 'finalizado',
   },
-  cancelado: {
-    label: 'Cancelado',
-    color: '#DC2626',
-    icon: XCircle,
-    description: 'Pedido foi cancelado',
-    step: 0,
-  },
+];
+
+// Função para determinar o step atual
+const getCurrentStep = (order: OrderDetails): number => {
+  if (order.status === 'cancelado') return -1;
+  if (order.status === 'finalizado') return 7;
+  if (order.status === 'em_andamento' && order.picked_up_at) return 6;
+  if (order.status === 'em_andamento') return 5;
+  if (order.status === 'motoboy_a_caminho') return 4;
+  if (order.status === 'aguardando_motoboy') return 3;
+  if (order.status === 'pronto') return 2;
+  if (order.status === 'aceito') return 1;
+  if (order.status === 'criado') return 0;
+  return 0;
 };
 
-const RESERVED_ORDER_DESCRIPTION =
-  'Motoboy está a caminho de uma entrega muito próxima ao seu endereço, assim que ele terminar iremos te notificar.';
+const calculateDeliveryEstimate = (distanceKm: number): string => {
+  const estimatedMinutes = Math.ceil((distanceKm / 30) * 60);
+  if (estimatedMinutes <= 1) return 'menos de 1 minuto';
+  if (estimatedMinutes < 60) return `${estimatedMinutes} minutos`;
+  const hours = Math.floor(estimatedMinutes / 60);
+  const mins = estimatedMinutes % 60;
+  return `${hours}h ${mins}min`;
+};
 
-// Formatação de métodos de pagamento
-const PAYMENT_METHODS = {
+// ========================================
+// MÉTODOS DE PAGAMENTO — SUPORTE A PT‑BR E INGLÊS
+// ========================================
+const PAYMENT_METHODS: Record<string, { label: string; color: string }> = {
   pix: { label: 'Pix', color: '#32BB6F' },
+  // Débito
   debito: { label: 'Cartão de Débito', color: '#2563EB' },
+  debito_online: { label: 'Cartão de Débito', color: '#2563EB' },
+  debito_cartao: { label: 'Cartão de Débito', color: '#2563EB' },
+  debit: { label: 'Cartão de Débito', color: '#2563EB' },
+  // Crédito
   credito: { label: 'Cartão de Crédito', color: '#9333EA' },
+  credito_online: { label: 'Cartão de Crédito', color: '#9333EA' },
+  credito_cartao: { label: 'Cartão de Crédito', color: '#9333EA' },
+  credit: { label: 'Cartão de Crédito', color: '#9333EA' },
+  // Dinheiro
   dinheiro: { label: 'Dinheiro', color: '#059669' },
+  cash: { label: 'Dinheiro', color: '#059669' },
+  money: { label: 'Dinheiro', color: '#059669' },
 };
 
-// Formatação de tipos de mercadoria
-const MERCHANDISE_TYPES = {
+const MERCHANDISE_TYPES: Record<string, { label: string; color: string }> = {
   lanche: { label: 'Lanche', color: '#EA580C' },
   pizza: { label: 'Pizza', color: '#DC2626' },
   marmitex: { label: 'Marmitex', color: '#059669' },
   documento: { label: 'Documento', color: '#2563EB' },
   mercado: { label: 'Mercado', color: '#9333EA' },
+  bebida: { label: 'Bebida', color: '#06B6D4' },
   outro: { label: 'Outro', color: '#6B7280' },
 };
 
@@ -181,12 +256,11 @@ function RatingModal({
       Alert.alert('Avaliação', 'Por favor, selecione uma opção.');
       return;
     }
-
     setSubmitting(true);
     try {
       await onSubmit(rating);
       onClose();
-    } catch (error) {
+    } catch {
       Alert.alert('Erro', 'Não foi possível enviar a avaliação.');
     } finally {
       setSubmitting(false);
@@ -197,56 +271,61 @@ function RatingModal({
     <Modal animationType="slide" transparent visible={visible} onRequestClose={onClose}>
       <View style={ratingStyles.container}>
         <View style={ratingStyles.content}>
-          <Text style={ratingStyles.title}>Avaliar Motoboy</Text>
-          <Text style={ratingStyles.subtitle}>Como foi a entrega com {motoboyName}?</Text>
+          <View style={ratingStyles.handle} />
+          <Text style={ratingStyles.title}>Como foi a entrega?</Text>
+          <Text style={ratingStyles.subtitle}>Avalie {motoboyName}</Text>
 
           <View style={ratingStyles.optionsContainer}>
             <TouchableOpacity
-              style={[ratingStyles.optionButton, rating === true && ratingStyles.optionSelected]}
+              style={[ratingStyles.optionButton, rating === true && ratingStyles.optionSelectedFast]}
               onPress={() => setRating(true)}
             >
-              <Star
-                size={32}
-                color={rating === true ? '#059669' : '#D1D5DB'}
-                fill={rating === true ? '#059669' : 'none'}
-              />
-              <View style={ratingStyles.optionTextContainer}>
-                <Text style={ratingStyles.optionText}>Entrega Rápida</Text>
-                <Text style={ratingStyles.optionDescription}>Entregou antes do esperado</Text>
+              <View style={[ratingStyles.optionIcon, { backgroundColor: rating === true ? '#DCFCE7' : '#F3F4F6' }]}>
+                <Star size={28} color={rating === true ? '#059669' : '#9CA3AF'} fill={rating === true ? '#059669' : 'none'} />
               </View>
+              <View style={ratingStyles.optionTextContainer}>
+                <Text style={[ratingStyles.optionText, rating === true && { color: '#059669' }]}>Entrega Rápida</Text>
+                <Text style={ratingStyles.optionDescription}>Chegou antes do esperado</Text>
+              </View>
+              {rating === true && (
+                <View style={ratingStyles.optionCheck}>
+                  <CheckCircle size={20} color="#059669" />
+                </View>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[ratingStyles.optionButton, rating === false && ratingStyles.optionSelected]}
+              style={[ratingStyles.optionButton, rating === false && ratingStyles.optionSelectedNormal]}
               onPress={() => setRating(false)}
             >
-              <Clock size={32} color={rating === false ? '#EA580C' : '#D1D5DB'} />
-              <View style={ratingStyles.optionTextContainer}>
-                <Text style={ratingStyles.optionText}>Entrega Normal</Text>
-                <Text style={ratingStyles.optionDescription}>Entregou dentro do tempo esperado</Text>
+              <View style={[ratingStyles.optionIcon, { backgroundColor: rating === false ? '#FFF7ED' : '#F3F4F6' }]}>
+                <Clock size={28} color={rating === false ? '#EA580C' : '#9CA3AF'} />
               </View>
+              <View style={ratingStyles.optionTextContainer}>
+                <Text style={[ratingStyles.optionText, rating === false && { color: '#EA580C' }]}>Entrega Normal</Text>
+                <Text style={ratingStyles.optionDescription}>Dentro do tempo esperado</Text>
+              </View>
+              {rating === false && (
+                <View style={ratingStyles.optionCheck}>
+                  <CheckCircle size={20} color="#EA580C" />
+                </View>
+              )}
             </TouchableOpacity>
           </View>
 
-          <View style={ratingStyles.buttonsContainer}>
-            <TouchableOpacity
-              style={[ratingStyles.button, ratingStyles.cancelButton]}
-              onPress={onClose}
-              disabled={submitting}
-            >
-              <Text style={ratingStyles.cancelButtonText}>Cancelar</Text>
-            </TouchableOpacity>
+          <TouchableOpacity
+            style={[ratingStyles.submitButton, rating === null && ratingStyles.submitButtonDisabled]}
+            onPress={handleSubmit}
+            disabled={submitting || rating === null}
+          >
+            <Text style={ratingStyles.submitButtonText}>
+              {submitting ? 'Enviando...' : 'Enviar Avaliação'}
+            </Text>
+          </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[ratingStyles.button, ratingStyles.submitButton]}
-              onPress={handleSubmit}
-              disabled={submitting || rating === null}
-            >
-              <Text style={ratingStyles.submitButtonText}>
-                {submitting ? 'Enviando...' : 'Enviar Avaliação'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity style={ratingStyles.skipButton} onPress={onClose}>
+            <Text style={ratingStyles.skipButtonText}>Agora não</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </Modal>
@@ -254,27 +333,29 @@ function RatingModal({
 }
 
 // ========================================
-// COMPONENTE CHAT MODAL (✅ corrigido: safe area + teclado)
+// CHAT MODAL
 // ========================================
 function ChatModal({
   visible,
   onClose,
   orderId,
   orderStatus,
+  chatTitle,
+  targetType,
 }: {
   visible: boolean;
   onClose: () => void;
   orderId: string;
   orderStatus: string;
+  chatTitle?: string;
+  targetType?: 'motoboy' | 'commerce' | 'support';
 }) {
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
-
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
-
   const subscriptionRef = useRef<any>(null);
   const scrollRef = useRef<ScrollView>(null);
 
@@ -283,27 +364,22 @@ function ChatModal({
       fetchMessages();
       subscribeToMessages();
     }
-
     return () => {
       if (subscriptionRef.current) {
         supabase.removeChannel(subscriptionRef.current);
         subscriptionRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, orderId]);
 
   useEffect(() => {
     if (!visible) return;
-    const t = setTimeout(() => {
-      scrollRef.current?.scrollToEnd({ animated: true });
-    }, 150);
+    const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 150);
     return () => clearTimeout(t);
   }, [messages.length, visible]);
 
   const fetchMessages = async () => {
     if (!orderId) return;
-
     setLoading(true);
     try {
       const { data: messagesData, error } = await supabase
@@ -311,45 +387,24 @@ function ChatModal({
         .select('*')
         .eq('order_id', orderId)
         .order('created_at', { ascending: true });
-
       if (error) throw error;
 
-      const messagesWithSenders = await Promise.all(
-        (messagesData || []).map(async (message: any) => {
-          const isCurrentUser = message.sender_id === user?.id;
-
+      const enriched = await Promise.all(
+        (messagesData || []).map(async (msg: any) => {
           let senderName = 'Usuário';
           try {
-            if (message.sender_id) {
-              const { data: cliente } = await supabase
-                .from('clientes')
-                .select('name')
-                .eq('user_id', message.sender_id)
-                .single();
-
-              if (cliente) {
-                senderName = cliente.name;
-              } else {
-                const { data: motoboy } = await supabase
-                  .from('motoboys')
-                  .select('name')
-                  .eq('user_id', message.sender_id)
-                  .single();
-
-                if (motoboy) senderName = motoboy.name;
-              }
+            const { data: c } = await supabase.from('clientes').select('name').eq('user_id', msg.sender_id).single();
+            if (c) senderName = c.name;
+            else {
+              const { data: m } = await supabase.from('motoboys').select('name').eq('user_id', msg.sender_id).single();
+              if (m) senderName = m.name;
             }
-          } catch {
-            // ignore
-          }
-
-          return { ...message, sender_name: senderName, isCurrentUser };
+          } catch {}
+          return { ...msg, sender_name: senderName, isCurrentUser: msg.sender_id === user?.id };
         })
       );
-
-      setMessages(messagesWithSenders);
-    } catch (error) {
-      console.error('Erro ao carregar mensagens:', error);
+      setMessages(enriched);
+    } catch {
       Alert.alert('Erro', 'Não foi possível carregar as mensagens');
     } finally {
       setLoading(false);
@@ -358,57 +413,27 @@ function ChatModal({
 
   const subscribeToMessages = () => {
     if (!orderId) return;
-
     if (subscriptionRef.current) {
       supabase.removeChannel(subscriptionRef.current);
       subscriptionRef.current = null;
     }
-
     subscriptionRef.current = supabase
       .channel(`order_chat_${orderId}`)
       .on(
         'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'order_chat_messages',
-          filter: `order_id=eq.${orderId}`,
-        },
+        { event: 'INSERT', schema: 'public', table: 'order_chat_messages', filter: `order_id=eq.${orderId}` },
         async (payload) => {
           const newMsg = payload.new as ChatMessage;
-
           let senderName = 'Usuário';
           try {
-            if (newMsg.sender_id) {
-              const { data: cliente } = await supabase
-                .from('clientes')
-                .select('name')
-                .eq('user_id', newMsg.sender_id)
-                .single();
-
-              if (cliente) {
-                senderName = cliente.name;
-              } else {
-                const { data: motoboy } = await supabase
-                  .from('motoboys')
-                  .select('name')
-                  .eq('user_id', newMsg.sender_id)
-                  .single();
-
-                if (motoboy) senderName = motoboy.name;
-              }
+            const { data: c } = await supabase.from('clientes').select('name').eq('user_id', newMsg.sender_id).single();
+            if (c) senderName = c.name;
+            else {
+              const { data: m } = await supabase.from('motoboys').select('name').eq('user_id', newMsg.sender_id).single();
+              if (m) senderName = m.name;
             }
-          } catch {
-            // ignore
-          }
-
-          const messageWithSender = {
-            ...newMsg,
-            sender_name: senderName,
-            isCurrentUser: newMsg.sender_id === user?.id,
-          };
-
-          setMessages((prev) => [...prev, messageWithSender]);
+          } catch {}
+          setMessages(prev => [...prev, { ...newMsg, sender_name: senderName, isCurrentUser: newMsg.sender_id === user?.id }]);
         }
       )
       .subscribe();
@@ -416,31 +441,31 @@ function ChatModal({
 
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !user?.id || !orderId) return;
-
     setSending(true);
     try {
       const { error } = await supabase.from('order_chat_messages').insert({
         order_id: orderId,
         sender_id: user.id,
+        sender_type: 'cliente',
         message: newMessage.trim(),
       });
-
       if (error) throw error;
       setNewMessage('');
-    } catch (error) {
-      console.error('Erro ao enviar mensagem:', error);
+    } catch {
       Alert.alert('Erro', 'Não foi possível enviar a mensagem');
     } finally {
       setSending(false);
     }
   };
 
-  const formatTime = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  };
-
+  const formatTime = (d: string) =>
+    new Date(d).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const isClosedChat = orderStatus === 'finalizado' || orderStatus === 'cancelado';
   const inputSafePadding = insets.bottom + 10;
+
+  const headerColor =
+    targetType === 'commerce' ? '#8B5CF6' :
+    targetType === 'support' ? '#EF4444' : '#2563EB';
 
   return (
     <Modal animationType="slide" transparent visible={visible} onRequestClose={onClose}>
@@ -450,21 +475,18 @@ function ChatModal({
         keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
       >
         <View style={chatStyles.content}>
-          <View style={chatStyles.header}>
-            <View style={chatStyles.headerLeft}>
-              <MessageCircle size={24} color="#2563EB" />
-              <Text style={chatStyles.headerTitle}>Chat da Corrida</Text>
-            </View>
+          <View style={[chatStyles.header, { backgroundColor: headerColor }]}>
             <TouchableOpacity onPress={onClose} style={chatStyles.closeButton}>
-              <X size={24} color="#6B7280" />
+              <ArrowLeft size={22} color="#FFFFFF" />
             </TouchableOpacity>
-          </View>
-
-          <View style={chatStyles.statusInfo}>
-            <AlertTriangle size={16} color="#EA580C" />
-            <Text style={chatStyles.statusText}>
-              Chat disponível apenas durante a corrida. Será fechado automaticamente ao finalizar.
-            </Text>
+            <View style={chatStyles.headerCenter}>
+              <Text style={chatStyles.headerTitle}>{chatTitle || 'Chat da Corrida'}</Text>
+              <View style={chatStyles.headerOnline}>
+                <View style={chatStyles.onlineDot} />
+                <Text style={chatStyles.headerSubtitle}>Online</Text>
+              </View>
+            </View>
+            <View style={{ width: 40 }} />
           </View>
 
           <ScrollView
@@ -472,46 +494,55 @@ function ChatModal({
             style={chatStyles.messagesContainer}
             contentContainerStyle={[
               chatStyles.messagesContent,
-              { paddingBottom: (orderStatus !== 'finalizado' && orderStatus !== 'cancelado' ? 110 : 40) + inputSafePadding },
+              { paddingBottom: (!isClosedChat ? 110 : 40) + inputSafePadding },
             ]}
             keyboardShouldPersistTaps="handled"
           >
             {loading ? (
-              <View style={chatStyles.loadingContainer}>
-                <Text style={chatStyles.loadingText}>Carregando mensagens...</Text>
+              <View style={chatStyles.emptyContainer}>
+                <Text style={chatStyles.emptyText}>Carregando mensagens...</Text>
               </View>
             ) : messages.length === 0 ? (
               <View style={chatStyles.emptyContainer}>
-                <MessageCircle size={48} color="#D1D5DB" />
-                <Text style={chatStyles.emptyText}>Nenhuma mensagem ainda. Seja o primeiro a enviar!</Text>
+                <MessageCircle size={40} color="#D1D5DB" />
+                <Text style={chatStyles.emptyText}>Nenhuma mensagem ainda</Text>
+                <Text style={chatStyles.emptySubtext}>Seja o primeiro a enviar!</Text>
               </View>
             ) : (
               messages.map((message) => (
                 <View
                   key={message.id}
-                  style={[
-                    chatStyles.messageBubble,
-                    message.isCurrentUser ? chatStyles.currentUserMessage : chatStyles.otherUserMessage,
-                  ]}
+                  style={[chatStyles.messageWrapper, message.isCurrentUser && chatStyles.messageWrapperRight]}
                 >
-                  <View style={chatStyles.messageHeader}>
-                    <View style={chatStyles.senderInfo}>
-                      <User size={12} color={message.isCurrentUser ? '#2563EB' : '#6B7280'} />
-                      <Text style={[chatStyles.senderName, message.isCurrentUser && chatStyles.currentUserSender]}>
-                        {message.sender_name}
+                  {!message.isCurrentUser && (
+                    <View style={[chatStyles.avatarMini, { backgroundColor: headerColor + '20' }]}>
+                      <Text style={[chatStyles.avatarMiniText, { color: headerColor }]}>
+                        {(message.sender_name || 'U')[0].toUpperCase()}
                       </Text>
                     </View>
-                    <Text style={chatStyles.messageTime}>{formatTime(message.created_at)}</Text>
+                  )}
+                  <View
+                    style={[
+                      chatStyles.messageBubble,
+                      message.isCurrentUser ? chatStyles.currentUserMessage : chatStyles.otherUserMessage,
+                    ]}
+                  >
+                    {!message.isCurrentUser && (
+                      <Text style={chatStyles.senderName}>{message.sender_name}</Text>
+                    )}
+                    <Text style={[chatStyles.messageText, message.isCurrentUser && chatStyles.currentUserMessageText]}>
+                      {message.message}
+                    </Text>
+                    <Text style={[chatStyles.messageTime, message.isCurrentUser && { color: 'rgba(255,255,255,0.7)' }]}>
+                      {formatTime(message.created_at)}
+                    </Text>
                   </View>
-                  <Text style={[chatStyles.messageText, message.isCurrentUser && chatStyles.currentUserMessageText]}>
-                    {message.message}
-                  </Text>
                 </View>
               ))
             )}
           </ScrollView>
 
-          {orderStatus !== 'finalizado' && orderStatus !== 'cancelado' && (
+          {!isClosedChat ? (
             <View style={[chatStyles.inputContainer, { paddingBottom: inputSafePadding }]}>
               <TextInput
                 style={chatStyles.input}
@@ -527,21 +558,19 @@ function ChatModal({
               <TouchableOpacity
                 style={[
                   chatStyles.sendButton,
+                  { backgroundColor: headerColor },
                   (!newMessage.trim() || sending) && chatStyles.sendButtonDisabled,
                 ]}
                 onPress={handleSendMessage}
                 disabled={!newMessage.trim() || sending}
               >
-                <Send size={20} color="#FFFFFF" />
+                <Send size={18} color="#FFFFFF" />
               </TouchableOpacity>
             </View>
-          )}
-
-          {(orderStatus === 'finalizado' || orderStatus === 'cancelado') && (
+          ) : (
             <View style={[chatStyles.chatClosedContainer, { paddingBottom: inputSafePadding }]}>
-              <Clock size={24} color="#DC2626" />
               <Text style={chatStyles.chatClosedText}>
-                Este chat foi encerrado porque a corrida foi {orderStatus === 'finalizado' ? 'finalizada' : 'cancelada'}
+                Chat encerrado · Corrida {orderStatus === 'finalizado' ? 'finalizada' : 'cancelada'}
               </Text>
             </View>
           )}
@@ -558,7 +587,6 @@ export default function OrderDetailsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const insets = useSafeAreaInsets();
-
   const id = typeof params.id === 'string' ? params.id : params.id?.[0] || '';
   const { user } = useAuth();
 
@@ -566,49 +594,46 @@ export default function OrderDetailsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const [showFullAddress, setShowFullAddress] = useState({ pickup: false, delivery: false });
   const [showChat, setShowChat] = useState(false);
-  const [canShowChat, setCanShowChat] = useState(false);
+  const [chatConfig, setChatConfig] = useState<{
+    title: string;
+    targetType: 'motoboy' | 'commerce' | 'support';
+  }>({ title: 'Chat da Corrida', targetType: 'motoboy' });
 
   const [showRatingModal, setShowRatingModal] = useState(false);
   const [isRatingSubmitted, setIsRatingSubmitted] = useState(false);
   const [closingOrder, setClosingOrder] = useState(false);
 
-  const calculateTimeSinceCreation = () => {
-    if (!order?.created_at) return 0;
-    const created = new Date(order.created_at).getTime();
-    const now = Date.now();
-    return Math.floor((now - created) / 1000);
-  };
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.08, duration: 800, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
+      ])
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, []);
 
   const fetchOrderDetails = async () => {
     if (!id || !user) return;
-
     try {
       const { data: cliente } = await supabase
         .from('clientes')
         .select('id')
         .eq('user_id', user.id)
         .single();
-
       if (!cliente) throw new Error('Perfil não encontrado');
 
       const { data: orderData, error: orderError } = await supabase
         .from('pedidos')
-        .select(
-          `
+        .select(`
           *,
-          motoboy:motoboys (
-            name,
-            phone,
-            vehicle_type,
-            license_plate,
-            fast_deliveries,
-            slow_deliveries,
-            driver_photo_url
-          )
-        `
-        )
+          motoboy:motoboys (name, phone, vehicle_type, license_plate, fast_deliveries, slow_deliveries, driver_photo_url),
+          commerce:commerces (name, phone, image_url)
+        `)
         .eq('id', id)
         .eq('customer_id', cliente.id)
         .single();
@@ -621,14 +646,9 @@ export default function OrderDetailsScreen() {
         .eq('order_id', id)
         .single();
 
-      setOrder({
-        ...(orderData as any),
-        motoboy_rating: ratingData || undefined,
-      });
-
+      setOrder({ ...(orderData as any), motoboy_rating: ratingData || undefined });
       if (ratingData) setIsRatingSubmitted(true);
-    } catch (error) {
-      console.error('Erro ao buscar detalhes:', error);
+    } catch {
       Alert.alert('Erro', 'Não foi possível carregar os detalhes');
       router.back();
     } finally {
@@ -636,69 +656,30 @@ export default function OrderDetailsScreen() {
     }
   };
 
-  const checkChatAvailability = () => {
-    if (!order) return;
-    const isAvailable = order.status === 'aceito' || order.status === 'em_andamento';
-    setCanShowChat(isAvailable);
-
-    if ((order.status === 'finalizado' || order.status === 'cancelado') && showChat) {
-      setShowChat(false);
-    }
-  };
-
   const finalizeOrder = async () => {
     if (!order) return;
-
     try {
-      const { error } = await supabase
+      await supabase
         .from('pedidos')
-        .update({
-          status: 'finalizado',
-          completed_at: new Date().toISOString(),
-        })
+        .update({ status: 'finalizado', completed_at: new Date().toISOString() })
         .eq('id', order.id);
-
-      if (error) throw error;
-
-      setOrder((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: 'finalizado',
-              completed_at: new Date().toISOString(),
-            }
-          : null
+      setOrder(prev =>
+        prev ? { ...prev, status: 'finalizado', completed_at: new Date().toISOString() } : null
       );
-    } catch (error) {
-      console.error('❌ Erro ao finalizar pedido:', error);
-    }
+    } catch {}
   };
 
   const submitRating = async (isFast: boolean) => {
     if (!order?.motoboy_id || !order?.id) return;
-
-    try {
-      const { error: ratingError } = await supabase.from('motoboy_ratings').insert({
-        order_id: order.id,
-        motoboy_id: order.motoboy_id,
-        is_fast: isFast,
-      });
-
-      if (ratingError) throw ratingError;
-
-      setIsRatingSubmitted(true);
-
-      await finalizeOrder();
-
-      Alert.alert(
-        '✅ Avaliação Enviada',
-        `Obrigado por avaliar! ${isFast ? 'Entrega rápida registrada.' : 'Entrega normal registrada.'}`,
-        [{ text: 'OK' }]
-      );
-    } catch (error) {
-      console.error('❌ Erro completo ao enviar avaliação:', error);
-      throw error;
-    }
+    const { error } = await supabase.from('motoboy_ratings').insert({
+      order_id: order.id,
+      motoboy_id: order.motoboy_id,
+      is_fast: isFast,
+    });
+    if (error) throw error;
+    setIsRatingSubmitted(true);
+    await finalizeOrder();
+    Alert.alert('✅ Obrigado!', isFast ? 'Entrega rápida registrada.' : 'Entrega normal registrada.');
   };
 
   const handleRefresh = async () => {
@@ -710,119 +691,104 @@ export default function OrderDetailsScreen() {
   const handleCancelOrder = () => {
     if (!order) return;
 
-    if (!['criado', 'aceito'].includes(order.status)) {
-      Alert.alert('Não é possível cancelar', 'O motoboy já está com seu pedido. Contate o suporte.');
+    if (!['aceito', 'criado'].includes(order.status)) {
+      Alert.alert(
+        'Não é possível cancelar',
+        'Seu pedido já está em andamento. Entre em contato com o estabelecimento.'
+      );
       return;
     }
 
-    const timeSinceCreation = calculateTimeSinceCreation();
-    const hasLateFee = order.status === 'aceito' && timeSinceCreation > 120;
-    const lateFee = hasLateFee ? 5.0 : 0.0;
+    const timeSinceCreation = order?.created_at
+      ? Math.floor((Date.now() - new Date(order.created_at).getTime()) / 1000)
+      : 0;
 
-    const feeMessage = hasLateFee
-      ? `\n\n⚠️ ATENÇÃO: O motoboy já aceitou sua corrida e já se passaram mais de 2 minutos.\n\n💰 Será cobrada uma taxa de R$ 5,00 na sua próxima corrida.`
-      : order.status === 'aceito'
-      ? `\n\nVocê pode cancelar sem taxa porque ainda não se passaram 2 minutos desde que o motoboy aceitou.`
-      : '';
+    const canCancel = timeSinceCreation <= 300;
 
-    Alert.alert('⚠️ Cancelar Pedido', `Tem certeza que deseja cancelar este pedido?${feeMessage}`, [
+    if (!canCancel) {
+      Alert.alert(
+        'Prazo de cancelamento expirado',
+        'Você só pode cancelar o pedido nos primeiros 5 minutos após a criação.\n\nEntre em contato com o estabelecimento diretamente pelo chat para solicitar o cancelamento.'
+      );
+      return;
+    }
+
+    Alert.alert('Cancelar Pedido', 'Tem certeza que deseja cancelar o pedido?', [
       { text: 'Não', style: 'cancel' },
       {
         text: 'Sim, cancelar',
         style: 'destructive',
         onPress: async () => {
           try {
-            const { error: updateError } = await supabase
+            await supabase
               .from('pedidos')
               .update({
                 status: 'cancelado',
                 cancelled_at: new Date().toISOString(),
-                late_cancel_fee: lateFee,
                 cancelled_by: 'customer',
                 cancel_reason: 'Cancelado pelo cliente',
               })
               .eq('id', order.id);
-
-            if (updateError) throw updateError;
-
-            if (hasLateFee && order.customer_id) {
-              await supabase.from('client_debts').insert({
-                customer_id: order.customer_id,
-                order_id: order.id,
-                amount: 5.0,
-                reason: 'Taxa de cancelamento tardio',
-                is_paid: false,
-              });
-            }
-
-            Alert.alert(
-              'Pedido Cancelado',
-              hasLateFee ? '💰 Uma taxa de R$ 5,00 será cobrada na próxima corrida.' : 'Pedido cancelado com sucesso, sem taxa.',
-              [{ text: 'OK' }]
-            );
-          } catch (error) {
-            console.error('❌ Erro ao cancelar:', error);
-            Alert.alert('Erro', error instanceof Error ? error.message : 'Erro ao cancelar pedido');
+            Alert.alert('Cancelado', 'Pedido cancelado com sucesso.');
+          } catch {
+            Alert.alert('Erro', 'Erro ao cancelar pedido');
           }
         },
       },
     ]);
   };
 
-  const handleContactSupport = () => {
-    router.push({ pathname: '/support', params: { pedidoId: order?.id } as any });
+  const handleOpenMap = (lat: number, lng: number, label: string) => {
+    const url =
+      Platform.OS === 'ios'
+        ? `maps://?q=${label}&ll=${lat},${lng}`
+        : `geo:${lat},${lng}?q=${label}`;
+    Linking.openURL(url).catch(() => Alert.alert('Erro', 'Não foi possível abrir o mapa'));
   };
 
-  const handleOpenMap = (lat: number, lng: number, label: string) => {
-    const url = Platform.OS === 'ios' ? `maps://?q=${label}&ll=${lat},${lng}` : `geo:${lat},${lng}?q=${label}`;
-    Linking.openURL(url).catch(() => {
-      Alert.alert('Erro', 'Não foi possível abrir o mapa');
-    });
+  const openChat = (type: 'motoboy' | 'commerce' | 'support') => {
+    const titles = {
+      motoboy: 'Falar com o Motoboy',
+      commerce: 'Falar com o Estabelecimento',
+      support: 'Suporte',
+    };
+    setChatConfig({ title: titles[type], targetType: type });
+    setShowChat(true);
   };
 
   const formatDateTime = (dateString?: string) => {
     if (!dateString) return '--:--';
-    const date = new Date(dateString);
-    return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+    return new Date(dateString).toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+    });
   };
 
   const calculateElapsedTime = (startTime: string, endTime?: string) => {
     const start = new Date(startTime).getTime();
     const end = endTime ? new Date(endTime).getTime() : Date.now();
     const diff = end - start;
-
     const hours = Math.floor(diff / (1000 * 60 * 60));
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-
     if (hours > 0) return `${hours}h ${minutes}m`;
     return `${minutes}m`;
   };
 
-  const formatAddress = (address: string, type: 'pickup' | 'delivery') => {
-    const isExpanded = showFullAddress[type];
-    if (isExpanded || address.length < 60) return address;
-    return address.substring(0, 57) + '...';
-  };
-
   const calculateMotoboyStats = () => {
     if (!order?.motoboy) return null;
-
-    const totalDeliveries = (order.motoboy.fast_deliveries || 0) + (order.motoboy.slow_deliveries || 0);
-    if (totalDeliveries === 0) return null;
-
-    const fastPercentage = ((order.motoboy.fast_deliveries || 0) / totalDeliveries) * 100;
-
+    const total = (order.motoboy.fast_deliveries || 0) + (order.motoboy.slow_deliveries || 0);
+    if (total === 0) return null;
     return {
-      total: totalDeliveries,
-      fastPercentage: Math.round(fastPercentage),
+      total,
+      fastPercentage: Math.round(((order.motoboy.fast_deliveries || 0) / total) * 100),
       fastDeliveries: order.motoboy.fast_deliveries || 0,
-      slowDeliveries: order.motoboy.slow_deliveries || 0,
     };
   };
 
   useEffect(() => {
     fetchOrderDetails();
-
     const subscription = supabase
       .channel(`order_detail_${id}`)
       .on(
@@ -831,31 +797,28 @@ export default function OrderDetailsScreen() {
         () => fetchOrderDetails()
       )
       .subscribe();
-
     return () => {
       subscription.unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   useEffect(() => {
-    if (order) {
-      checkChatAvailability();
-
-      if (order.status === 'finalizado' && !order.motoboy_rating && !isRatingSubmitted && !closingOrder && order.motoboy) {
-        setTimeout(() => {
-          setShowRatingModal(true);
-        }, 500);
-      }
+    if (
+      order?.status === 'finalizado' &&
+      !order.motoboy_rating &&
+      !isRatingSubmitted &&
+      !closingOrder &&
+      order.motoboy
+    ) {
+      setTimeout(() => setShowRatingModal(true), 500);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order]);
 
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
         <LoadingSpinner size="large" color="#2563EB" />
-        <Text style={styles.loadingText}>Carregando detalhes do pedido...</Text>
+        <Text style={styles.loadingText}>Carregando seu pedido...</Text>
       </View>
     );
   }
@@ -872,356 +835,449 @@ export default function OrderDetailsScreen() {
     );
   }
 
-  const isReservedOrder = !!order.is_reserved && order.status === 'criado';
-  const displayStatus = isReservedOrder ? 'aceito' : order.status;
+  const isCancelled = order.status === 'cancelado';
+  const currentStep = getCurrentStep(order);
+  const activeStep = currentStep >= 0 ? DELIVERY_STEPS[currentStep] : null;
 
-  const statusConfig = isReservedOrder
-    ? {
-        ...(STATUS_CONFIG as any).aceito,
-        description: RESERVED_ORDER_DESCRIPTION,
-      }
-    : (STATUS_CONFIG as any)[order.status] || (STATUS_CONFIG as any).criado;
-
-  const StatusIcon = statusConfig.icon;
+  // --- CORREÇÃO DO MÉTODO DE PAGAMENTO (PT‑BR + INGLÊS) ---
+  const normalizedPaymentMethod = (order.payment_method || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 
   const paymentConfig =
-    (PAYMENT_METHODS as any)[order.payment_method as keyof typeof PAYMENT_METHODS] || (PAYMENT_METHODS as any).pix;
-  const merchandiseConfig =
-    (MERCHANDISE_TYPES as any)[order.merchandise_type as keyof typeof MERCHANDISE_TYPES] || (MERCHANDISE_TYPES as any).outro;
+    PAYMENT_METHODS[normalizedPaymentMethod] || {
+      label: order.payment_method || 'Não informado',
+      color: '#6B7280',
+    };
+  // ---------------------------------------------------------
 
+  const merchandiseConfig = MERCHANDISE_TYPES[order.merchandise_type] || MERCHANDISE_TYPES.outro;
   const motoboyStats = calculateMotoboyStats();
-  const elapsedTime = calculateElapsedTime(order.created_at);
+
+  const canShowMotoboyChat =
+    order.motoboy_id &&
+    (order.status === 'motoboy_a_caminho' || order.status === 'em_andamento');
+  const deliveryEstimate = calculateDeliveryEstimate(order.distance_km);
+  const timeSinceCreation = order.created_at
+    ? Math.floor((Date.now() - new Date(order.created_at).getTime()) / 1000)
+    : 0;
+  const canCancel = timeSinceCreation <= 300 && ['aceito', 'criado'].includes(order.status);
+  const headerBg = isCancelled ? '#DC2626' : activeStep?.color || '#059669';
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+      {/* HEADER */}
+      <View style={[styles.header, { paddingTop: insets.top + 12, backgroundColor: headerBg }]}>
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <ArrowLeft size={24} color="#FFFFFF" strokeWidth={2} />
         </TouchableOpacity>
         <View style={styles.headerContent}>
-          <Text style={styles.headerTitle}>Pedido #{order.id.slice(-8)}</Text>
-          <Text style={styles.headerSubtitle}>{new Date(order.created_at).toLocaleDateString('pt-BR')}</Text>
+          <Text style={styles.headerTitle}>Acompanhar Pedido</Text>
+          <Text style={styles.headerSubtitle}>#{order.id.slice(-8).toUpperCase()}</Text>
         </View>
+        {(order.status === 'motoboy_a_caminho' || order.status === 'em_andamento') &&
+          order.motoboy_id && (
+            <TouchableOpacity
+              style={styles.mapHeaderBtn}
+              onPress={() => router.push(`/order/track/${order.id}`)}
+            >
+              <Map size={20} color="#FFFFFF" />
+            </TouchableOpacity>
+          )}
       </View>
 
       <ScrollView
         style={styles.content}
-        contentContainerStyle={styles.contentContainer}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={['#2563EB']} />}
+        contentContainerStyle={[styles.contentContainer, { paddingBottom: insets.bottom + 100 }]}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[headerBg]} />
+        }
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.statusSection}>
-          <View style={styles.statusHeader}>
-            <View style={[styles.statusBadge, { backgroundColor: statusConfig.color + '15' }]}>
-              <StatusIcon size={24} color={statusConfig.color} strokeWidth={2} />
-              <Text style={[styles.statusLabel, { color: statusConfig.color }]}>{statusConfig.label}</Text>
-            </View>
-            <Text style={styles.statusDescription}>{statusConfig.description}</Text>
-          </View>
-
-          <View style={styles.timeline}>
-            {(['criado', 'aceito', 'em_andamento', 'finalizado'] as const).map((status, index) => {
-              const stepConfig = (STATUS_CONFIG as any)[status];
-              const isActive = statusConfig.step >= stepConfig.step;
-              const isCurrent = displayStatus === status;
-
-              return (
-                <View key={status} style={styles.timelineStep}>
-                  <View
-                    style={[
-                      styles.timelineDot,
-                      isActive && { backgroundColor: stepConfig.color },
-                      isCurrent && styles.timelineDotCurrent,
-                    ]}
-                  >
-                    {isActive && <CheckCircle size={12} color="#FFFFFF" />}
-                  </View>
-                  <Text
-                    style={[
-                      styles.timelineLabel,
-                      isActive && { color: stepConfig.color, fontWeight: '600' },
-                    ]}
-                  >
-                    {stepConfig.label}
-                  </Text>
-                  {index < 3 && (
-                    <View style={[styles.timelineLine, isActive && { backgroundColor: stepConfig.color }]} />
-                  )}
-                </View>
-              );
-            })}
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>
-            <DollarSign size={20} color="#059669" /> Resumo Financeiro
-          </Text>
-
-          <View style={styles.priceGrid}>
-            <View style={styles.priceCard}>
-              <Text style={styles.priceCardLabel}>Valor Total</Text>
-              <Text style={styles.priceValue}>R$ {order.price.toFixed(2)}</Text>
-            </View>
-
-            <View style={styles.priceCard}>
-              <Text style={styles.priceCardLabel}>Método</Text>
-              <Text style={styles.priceValue}>{paymentConfig.label}</Text>
-            </View>
-          </View>
-        </View>
-
-        {order.motoboy && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>
-              <User size={20} color="#2563EB" /> Motoboy
-            </Text>
-
-            <View style={styles.motoboyCard}>
-              {order.motoboy.driver_photo_url ? (
-                <Image source={{ uri: order.motoboy.driver_photo_url }} style={styles.motoboyAvatar} />
-              ) : (
-                <View style={styles.motoboyAvatar}>
-                  <User size={24} color="#FFFFFF" />
-                </View>
+        {/* CARD DE STATUS PRINCIPAL */}
+        {!isCancelled ? (
+          <View style={[styles.statusHeroCard, { borderLeftColor: activeStep?.color || '#059669' }]}>
+            <View style={styles.statusHeroLeft}>
+              {activeStep && (
+                <Animated.View
+                  style={[
+                    styles.statusIconWrapper,
+                    { backgroundColor: (activeStep?.color || '#059669') + '18' },
+                    order.status !== 'finalizado' && { transform: [{ scale: pulseAnim }] },
+                  ]}
+                >
+                  {React.createElement(activeStep.icon, {
+                    size: 28,
+                    color: activeStep.color,
+                    strokeWidth: 2,
+                  })}
+                </Animated.View>
               )}
-
-              <View style={styles.motoboyInfo}>
-                <Text style={styles.motoboyName}>{order.motoboy.name}</Text>
-
-                {motoboyStats && (
-                  <View style={styles.statsContainer}>
-                    <View style={styles.statRow}>
-                      <View style={styles.statItem}>
-                        <Star size={16} color="#059669" />
-                        <Text style={styles.statValue}>{motoboyStats.fastPercentage}%</Text>
-                        <Text style={styles.statLabel}>Rápidas</Text>
-                      </View>
-                      <View style={styles.statDivider} />
-                      <View style={styles.statItem}>
-                        <Text style={styles.statValue}>{motoboyStats.total}</Text>
-                        <Text style={styles.statLabel}>Total</Text>
-                      </View>
-                    </View>
-                  </View>
-                )}
-
-                <View style={styles.motoboyDetails}>
-                  <View style={styles.motoboyDetail}>
-                    <Bike size={14} color="#6B7280" />
-                    <Text style={styles.motoboyDetailText}>{order.motoboy.vehicle_type.toUpperCase()}</Text>
-                  </View>
-                  <View style={styles.motoboyDetail}>
-                    <Shield size={14} color="#6B7280" />
-                    <Text style={styles.motoboyDetailText}>Placa: {order.motoboy.license_plate}</Text>
-                  </View>
-                </View>
-
-                {order.motoboy_rating && (
-                  <View style={styles.currentRating}>
-                    <View
-                      style={[
-                        styles.ratingBadge,
-                        {
-                          backgroundColor: order.motoboy_rating.is_fast ? '#05966915' : '#EA580C15',
-                        },
-                      ]}
-                    >
-                      {order.motoboy_rating.is_fast ? (
-                        <>
-                          <Star size={14} color="#059669" fill="#059669" />
-                          <Text style={[styles.ratingText, { color: '#059669' }]}>Você avaliou: Entrega Rápida</Text>
-                        </>
-                      ) : (
-                        <>
-                          <Clock size={14} color="#EA580C" />
-                          <Text style={[styles.ratingText, { color: '#EA580C' }]}>Você avaliou: Entrega Normal</Text>
-                        </>
-                      )}
-                    </View>
+              <View style={styles.statusHeroText}>
+                <Text style={[styles.statusHeroTitle, { color: activeStep?.color || '#059669' }]}>
+                  {activeStep?.label || 'Processando pedido'}
+                </Text>
+                <Text style={styles.statusHeroDesc}>{activeStep?.sublabel}</Text>
+                {order.status === 'em_andamento' && order.picked_up_at && (
+                  <View style={styles.estimateContainer}>
+                    <Timer size={14} color="#059669" />
+                    <Text style={styles.estimateText}>
+                      Estimativa de entrega: {deliveryEstimate}
+                    </Text>
                   </View>
                 )}
               </View>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.cancelledCard}>
+            <XCircle size={28} color="#DC2626" />
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={styles.cancelledTitle}>Pedido Cancelado</Text>
+              {order.cancel_reason && (
+                <Text style={styles.cancelledReason}>{order.cancel_reason}</Text>
+              )}
             </View>
           </View>
         )}
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>
-            <Map size={20} color="#EA580C" /> Trajeto
-          </Text>
+        {/* PIPELINE DE PROGRESSO */}
+        {!isCancelled && (
+          <View style={styles.pipelineCard}>
+            <Text style={styles.sectionLabel}>Progresso do Pedido</Text>
+            <View style={styles.pipeline}>
+              {DELIVERY_STEPS.map((step, index) => {
+                const isCompleted = index < currentStep;
+                const isCurrent = index === currentStep;
+                const StepIcon = step.icon;
 
-          <View style={styles.routeTimeline}>
-            <View style={styles.routeStep}>
-              <View style={[styles.routeDot, { backgroundColor: '#059669' }]} />
-              <View style={styles.routeContent}>
-                <Text style={styles.routeStepLabel}>RETIRADA</Text>
-                <Text style={styles.routeStepTime}>{order.accepted_at ? formatDateTime(order.accepted_at) : '--:--'}</Text>
+                // Oculta steps de "pedido retirado" e "a caminho" se não estiver em_andamento
+                if (index === 5 && order.status !== 'em_andamento') return null;
+                if (index === 6 && order.status !== 'em_andamento') return null;
+
+                return (
+                  <View key={step.key} style={styles.pipelineRow}>
+                    <View style={styles.pipelineLeft}>
+                      <View
+                        style={[
+                          styles.pipelineDot,
+                          isCompleted && { backgroundColor: step.color, borderColor: step.color },
+                          isCurrent && { backgroundColor: step.color, borderColor: step.color },
+                          !isCompleted && !isCurrent && styles.pipelineDotFuture,
+                        ]}
+                      >
+                        {isCompleted ? (
+                          <CheckCircle size={12} color="#FFFFFF" />
+                        ) : isCurrent ? (
+                          <StepIcon size={12} color="#FFFFFF" />
+                        ) : (
+                          <View style={styles.pipelineDotInner} />
+                        )}
+                      </View>
+                      {index < DELIVERY_STEPS.length - 1 && (
+                        <View
+                          style={[
+                            styles.pipelineLine,
+                            (isCompleted || isCurrent) && { backgroundColor: step.color },
+                          ]}
+                        />
+                      )}
+                    </View>
+                    <View
+                      style={[
+                        styles.pipelineContent,
+                        index < DELIVERY_STEPS.length - 1 && { paddingBottom: 16 },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.pipelineStepLabel,
+                          isCurrent && { color: step.color, fontWeight: '700' },
+                          isCompleted && { color: '#6B7280' },
+                          !isCompleted && !isCurrent && { color: '#9CA3AF' },
+                        ]}
+                      >
+                        {step.label}
+                      </Text>
+                      {isCurrent && (
+                        <Text style={[styles.pipelineStepSublabel, { color: step.color + 'CC' }]}>
+                          {step.sublabel}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+        )}
+
+        {/* MOTOBOY CARD */}
+        {order.motoboy && (
+          <View style={styles.card}>
+            <Text style={styles.sectionLabel}>Seu Entregador</Text>
+            <View style={styles.motoboyRow}>
+              <View style={styles.motoboyAvatarWrap}>
+                {order.motoboy.driver_photo_url ? (
+                  <Image
+                    source={{ uri: order.motoboy.driver_photo_url }}
+                    style={styles.motoboyAvatar}
+                  />
+                ) : (
+                  <View style={[styles.motoboyAvatar, styles.motoboyAvatarFallback]}>
+                    <Text style={styles.motoboyAvatarInitial}>
+                      {order.motoboy.name[0].toUpperCase()}
+                    </Text>
+                  </View>
+                )}
+                <View style={styles.motoboyOnlineBadge} />
               </View>
+
+              <View style={styles.motoboyInfo}>
+                <Text style={styles.motoboyName}>{order.motoboy.name}</Text>
+                <View style={styles.motoboyMeta}>
+                  <Bike size={13} color="#6B7280" />
+                  <Text style={styles.motoboyMetaText}>
+                    {order.motoboy.vehicle_type.toUpperCase()}
+                  </Text>
+                  <Text style={styles.dotSep}>·</Text>
+                  <Shield size={13} color="#6B7280" />
+                  <Text style={styles.motoboyMetaText}>{order.motoboy.license_plate}</Text>
+                </View>
+
+                {motoboyStats && (
+                  <View style={styles.ratingRow}>
+                    <Star size={13} color="#F59E0B" fill="#F59E0B" />
+                    <Text style={styles.ratingText}>
+                      {motoboyStats.fastPercentage}% entregas rápidas
+                    </Text>
+                    <Text style={styles.ratingTotal}>({motoboyStats.total} total)</Text>
+                  </View>
+                )}
+              </View>
+
+              {canShowMotoboyChat && (
+                <TouchableOpacity style={styles.callBtn} onPress={() => openChat('motoboy')}>
+                  <MessageCircle size={18} color="#2563EB" />
+                </TouchableOpacity>
+              )}
             </View>
 
-            <View style={styles.routeLine} />
-
-            <View style={styles.routeStep}>
+            {order.motoboy_rating && (
               <View
                 style={[
-                  styles.routeDot,
-                  {
-                    backgroundColor:
-                      order.status === 'em_andamento' || order.status === 'finalizado' ? '#EA580C' : '#D1D5DB',
-                  },
+                  styles.ratingBadge,
+                  { backgroundColor: order.motoboy_rating.is_fast ? '#DCFCE7' : '#FFF7ED' },
                 ]}
-              />
-              <View style={styles.routeContent}>
-                <Text style={styles.routeStepLabel}>EM TRÂNSITO</Text>
-                <Text style={styles.routeStepTime}>{order.picked_up_at ? formatDateTime(order.picked_up_at) : '--:--'}</Text>
+              >
+                {order.motoboy_rating.is_fast ? (
+                  <Star size={14} color="#059669" fill="#059669" />
+                ) : (
+                  <Clock size={14} color="#EA580C" />
+                )}
+                <Text
+                  style={[
+                    styles.ratingBadgeText,
+                    { color: order.motoboy_rating.is_fast ? '#059669' : '#EA580C' },
+                  ]}
+                >
+                  Você avaliou: {order.motoboy_rating.is_fast ? 'Entrega Rápida' : 'Entrega Normal'}
+                </Text>
               </View>
+            )}
+          </View>
+        )}
+
+        {/* ENDEREÇOS */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>Trajeto</Text>
+
+          <TouchableOpacity
+            style={styles.addressRow}
+            onPress={() => handleOpenMap(order.pickup_lat, order.pickup_lng, 'Retirada')}
+          >
+            <View style={[styles.addressDot, { backgroundColor: '#10B981' }]} />
+            <View style={styles.addressInfo}>
+              <Text style={styles.addressType}>RETIRADA</Text>
+              <Text style={styles.addressText} numberOfLines={2}>
+                {order.pickup_address}
+              </Text>
+              {order.pickup_bairro && (
+                <Text style={styles.addressBairro}>{order.pickup_bairro}</Text>
+              )}
             </View>
+            <Navigation size={16} color="#10B981" />
+          </TouchableOpacity>
 
-            <View style={styles.routeLine} />
-
-            <View style={styles.routeStep}>
-              <View
-                style={[
-                  styles.routeDot,
-                  { backgroundColor: order.status === 'finalizado' ? '#DC2626' : '#D1D5DB' },
-                ]}
-              />
-              <View style={styles.routeContent}>
-                <Text style={styles.routeStepLabel}>ENTREGA</Text>
-                <Text style={styles.routeStepTime}>{order.completed_at ? formatDateTime(order.completed_at) : '--:--'}</Text>
-              </View>
+          <View style={styles.addressConnector}>
+            <View style={[styles.addressConnectorLine, { left: 15 }]} />
+            <View style={styles.distanceBadge}>
+              <Text style={styles.distanceBadgeText}>{order.distance_km.toFixed(1)} km</Text>
             </View>
           </View>
 
-          <View style={styles.addressesContainer}>
-            <TouchableOpacity
-              style={[styles.addressCard, displayStatus === 'aceito' && styles.addressCardHighlight]}
-              onPress={() => handleOpenMap(order.pickup_lat, order.pickup_lng, 'Retirada')}
-              onLongPress={() => setShowFullAddress((prev) => ({ ...prev, pickup: !prev.pickup }))}
-            >
-              <View style={[styles.addressIcon, { backgroundColor: '#05966915' }]}>
-                <MapPin size={20} color="#059669" />
-              </View>
-              <View style={styles.addressInfo}>
-                <View style={styles.addressHeader}>
-                  <Text style={styles.addressLabel}>RETIRADA</Text>
-                  {displayStatus === 'aceito' && (
-                    <View style={styles.activeBadge}>
-                      <Loader size={12} color="#2563EB" />
-                      <Text style={styles.activeBadgeText}>A caminho</Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.addressText}>{formatAddress(order.pickup_address, 'pickup')}</Text>
-                {order.pickup_bairro && <Text style={styles.addressBairro}>{order.pickup_bairro}</Text>}
-              </View>
-            </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.addressRow}
+            onPress={() => handleOpenMap(order.delivery_lat, order.delivery_lng, 'Entrega')}
+          >
+            <View style={[styles.addressDot, { backgroundColor: '#EF4444' }]} />
+            <View style={styles.addressInfo}>
+              <Text style={styles.addressType}>ENTREGA</Text>
+              <Text style={styles.addressText} numberOfLines={2}>
+                {order.delivery_address}
+              </Text>
+              {order.delivery_bairro && (
+                <Text style={styles.addressBairro}>{order.delivery_bairro}</Text>
+              )}
+            </View>
+            <Navigation size={16} color="#EF4444" />
+          </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.addressCard, order.status === 'em_andamento' && styles.addressCardHighlight]}
-              onPress={() => handleOpenMap(order.delivery_lat, order.delivery_lng, 'Entrega')}
-              onLongPress={() => setShowFullAddress((prev) => ({ ...prev, delivery: !prev.delivery }))}
-            >
-              <View style={[styles.addressIcon, { backgroundColor: '#DC262615' }]}>
-                <MapPin size={20} color="#DC2626" />
-              </View>
-              <View style={styles.addressInfo}>
-                <View style={styles.addressHeader}>
-                  <Text style={styles.addressLabel}>ENTREGA</Text>
-                  {order.status === 'em_andamento' && (
-                    <View style={styles.activeBadge}>
-                      <Bike size={12} color="#EA580C" />
-                      <Text style={styles.activeBadgeText}>Em entrega</Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.addressText}>{formatAddress(order.delivery_address, 'delivery')}</Text>
-                {order.delivery_bairro && <Text style={styles.addressBairro}>{order.delivery_bairro}</Text>}
-              </View>
-            </TouchableOpacity>
-          </View>
-
-          {order.motoboy_id && (order.status === 'aceito' || order.status === 'em_andamento') && (
-            <TouchableOpacity style={styles.trackButton} onPress={() => router.push(`/order/track/${order.id}`)}>
-              <Map size={24} color="#FFFFFF" />
-              <Text style={styles.trackButtonText}>Acompanhar no Mapa em Tempo Real</Text>
-            </TouchableOpacity>
-          )}
+          {order.motoboy_id &&
+            (order.status === 'motoboy_a_caminho' || order.status === 'em_andamento') && (
+              <TouchableOpacity
+                style={styles.trackMapBtn}
+                onPress={() => router.push(`/order/track/${order.id}`)}
+              >
+                <Map size={18} color="#FFFFFF" />
+                <Text style={styles.trackMapBtnText}>Ver no Mapa em Tempo Real</Text>
+              </TouchableOpacity>
+            )}
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>
-            <BarChart size={20} color="#9333EA" /> Estatísticas
-          </Text>
-
-          <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <Timer size={24} color="#2563EB" />
-              <Text style={styles.statValue}>{elapsedTime}</Text>
-              <Text style={styles.statLabel}>Tempo Total</Text>
+        {/* RESUMO FINANCEIRO */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>Resumo</Text>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryKey}>Valor total</Text>
+            <Text style={styles.summaryValue}>R$ {order.price.toFixed(2)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryKey}>Pagamento</Text>
+            <View style={[styles.paymentBadge, { backgroundColor: paymentConfig.color + '15' }]}>
+              <Text style={[styles.paymentBadgeText, { color: paymentConfig.color }]}>
+                {paymentConfig.label}
+              </Text>
             </View>
-
-            <View style={styles.statCard}>
-              <Navigation size={24} color="#059669" />
-              <Text style={styles.statValue}>{order.distance_km.toFixed(1)}km</Text>
-              <Text style={styles.statLabel}>Distância</Text>
-            </View>
-
-            <View style={styles.statCard}>
-              <Package size={24} color="#EA580C" />
-              <Text style={styles.statValue}>{merchandiseConfig.label}</Text>
-              <Text style={styles.statLabel}>Tipo</Text>
-            </View>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryKey}>Distância</Text>
+            <Text style={styles.summaryValue}>{order.distance_km.toFixed(1)} km</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryKey}>Tipo de mercadoria</Text>
+            <Text style={styles.summaryValue}>{merchandiseConfig.label}</Text>
+          </View>
+          <View style={[styles.summaryRow, { borderBottomWidth: 0 }]}>
+            <Text style={styles.summaryKey}>Tempo decorrido</Text>
+            <Text style={styles.summaryValue}>{calculateElapsedTime(order.created_at)}</Text>
           </View>
         </View>
 
+        {/* NOTAS */}
         {order.notes && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>📝 Instruções Especiais</Text>
-            <View style={styles.notesCard}>
+          <View style={styles.card}>
+            <Text style={styles.sectionLabel}>Instruções Especiais</Text>
+            <View style={styles.notesBox}>
               <Text style={styles.notesText}>{order.notes}</Text>
             </View>
           </View>
         )}
 
+        {/* TIMELINE DE HORÁRIOS */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>Histórico de Horários</Text>
+          {[
+            { label: 'Pedido criado', time: order.created_at, icon: '📋' },
+            { label: 'Pedido aceito pelo comércio', time: order.accepted_at, icon: '✅' },
+            { label: 'Pedido pronto', time: order.ready_at, icon: '🍽️' },
+            { label: 'Aguardando motoboy', time: order.status === 'aguardando_motoboy' ? new Date().toISOString() : undefined, icon: '🏍️' },
+            { label: 'Motoboy aceitou', time: order.motoboy_assigned_at, icon: '🏍️' },
+            { label: 'Pedido retirado', time: order.picked_up_at, icon: '📦' },
+            { label: 'Pedido entregue', time: order.completed_at, icon: '🏠' },
+            { label: 'Cancelado', time: order.cancelled_at, icon: '❌' },
+          ]
+            .filter(e => e.time)
+            .map((entry, i) => (
+              <View key={i} style={styles.timelineRow}>
+                <Text style={styles.timelineIcon}>{entry.icon}</Text>
+                <Text style={styles.timelineLabel}>{entry.label}</Text>
+                <Text style={styles.timelineTime}>{formatDateTime(entry.time)}</Text>
+              </View>
+            ))}
+        </View>
+
+        {/* AÇÕES */}
         <View style={styles.actionsSection}>
-          <TouchableOpacity style={styles.actionButton} onPress={handleContactSupport}>
-            <MessageCircle size={20} color="#FFFFFF" />
-            <Text style={styles.actionButtonText}>Falar com Suporte</Text>
+          {canShowMotoboyChat && (
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: '#2563EB' }]}
+              onPress={() => openChat('motoboy')}
+            >
+              <Bike size={18} color="#FFFFFF" />
+              <Text style={styles.actionBtnText}>Falar com o Motoboy</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: '#7C3AED' }]}
+            onPress={() => openChat('commerce')}
+          >
+            <Store size={18} color="#FFFFFF" />
+            <Text style={styles.actionBtnText}>Falar com o Estabelecimento</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: '#374151' }]}
+            onPress={() =>
+              router.push({ pathname: '/support', params: { pedidoId: order?.id } as any })
+            }
+          >
+            <MessageCircle size={18} color="#FFFFFF" />
+            <Text style={styles.actionBtnText}>Falar com o Suporte</Text>
           </TouchableOpacity>
 
           {!['finalizado', 'cancelado'].includes(order.status) && (
-            <TouchableOpacity style={[styles.actionButton, styles.cancelActionButton]} onPress={handleCancelOrder}>
-              <XCircle size={20} color="#FFFFFF" />
-              <Text style={styles.actionButtonText}>Cancelar Pedido</Text>
+            <TouchableOpacity
+              style={[
+                styles.actionBtn,
+                canCancel ? styles.cancelBtn : styles.cancelBtnDisabled,
+              ]}
+              onPress={handleCancelOrder}
+              disabled={!canCancel}
+            >
+              <XCircle size={18} color={canCancel ? '#DC2626' : '#9CA3AF'} />
+              <Text style={[styles.actionBtnText, { color: canCancel ? '#DC2626' : '#9CA3AF' }]}>
+                {canCancel ? 'Cancelar Pedido' : 'Cancelamento indisponível'}
+              </Text>
             </TouchableOpacity>
+          )}
+
+          {!canCancel && !['finalizado', 'cancelado'].includes(order.status) && (
+            <Text style={styles.cancelInfoText}>
+              ⏰ Cancelamento disponível apenas nos primeiros 5 minutos
+            </Text>
           )}
         </View>
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>ID do Pedido: {order.id}</Text>
-          <Text style={styles.footerText}>Última atualização: {formatDateTime(order.updated_at)}</Text>
+          <Text style={styles.footerText}>ID: {order.id}</Text>
+          <Text style={styles.footerText}>Atualizado em {formatDateTime(order.updated_at)}</Text>
         </View>
       </ScrollView>
 
-      {canShowChat && (
-        <TouchableOpacity
-          style={[
-            styles.chatBubble,
-            { bottom: insets.bottom + 16 },
-          ]}
-          onPress={() => setShowChat(true)}
-        >
-          <MessageCircle size={24} color="#FFFFFF" />
-          <View style={styles.chatBadge}>
-            <Text style={styles.chatBadgeText}>Chat</Text>
-          </View>
-        </TouchableOpacity>
-      )}
+      {/* CHAT MODAL */}
+      <ChatModal
+        visible={showChat}
+        onClose={() => setShowChat(false)}
+        orderId={id}
+        orderStatus={order?.status || 'criado'}
+        chatTitle={chatConfig.title}
+        targetType={chatConfig.targetType}
+      />
 
-      <ChatModal visible={showChat} onClose={() => setShowChat(false)} orderId={id as string} orderStatus={order?.status || 'criado'} />
-
+      {/* RATING MODAL */}
       {order.motoboy && !order.motoboy_rating && (
         <RatingModal
           visible={showRatingModal}
@@ -1237,398 +1293,387 @@ export default function OrderDetailsScreen() {
 // ========================================
 // ESTILOS
 // ========================================
-const { width, height } = Dimensions.get('window');
-
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F9FAFB',
-  },
+  container: { flex: 1, backgroundColor: '#F3F4F6' },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
   },
-  loadingText: {
-    marginTop: 16,
-    color: '#6B7280',
-    fontSize: 16,
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    padding: 20,
-  },
-  errorText: {
-    marginTop: 16,
-    fontSize: 18,
-    color: '#DC2626',
-    fontWeight: '600',
-  },
+  loadingText: { marginTop: 16, color: '#6B7280', fontSize: 16 },
+  errorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
+  errorText: { marginTop: 16, fontSize: 18, color: '#DC2626', fontWeight: '600' },
   backButtonError: {
     marginTop: 20,
     paddingHorizontal: 24,
     paddingVertical: 12,
     backgroundColor: '#2563EB',
-    borderRadius: 8,
+    borderRadius: 12,
   },
-  backButtonErrorText: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
+  backButtonErrorText: { color: '#FFFFFF', fontWeight: '600' },
+
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#2563EB',
     paddingBottom: 20,
     paddingHorizontal: 20,
   },
-  backButton: {
-    marginRight: 16,
-  },
-  headerContent: {
-    flex: 1,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    color: '#DBEAFE',
-    marginTop: 4,
-  },
-  content: { flex: 1 },
-  contentContainer: { padding: 20 },
-
-  statusSection: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-  },
-  statusHeader: { alignItems: 'center', marginBottom: 20 },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    marginBottom: 12,
-  },
-  statusLabel: { fontSize: 16, fontWeight: '600', marginLeft: 8 },
-  statusDescription: { fontSize: 14, color: '#6B7280', textAlign: 'center' },
-
-  timeline: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  timelineStep: { alignItems: 'center', flex: 1 },
-  timelineDot: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: '#E5E7EB',
+  backButton: { marginRight: 16, padding: 4 },
+  headerContent: { flex: 1 },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: '#FFFFFF' },
+  headerSubtitle: { fontSize: 13, color: 'rgba(255,255,255,0.75)', marginTop: 2 },
+  mapHeaderBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 8,
-  },
-  timelineDotCurrent: {
-    borderWidth: 3,
-    borderColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  timelineLabel: { fontSize: 11, color: '#9CA3AF', textAlign: 'center' },
-  timelineLine: {
-    position: 'absolute',
-    top: 12,
-    right: -((width - 120) / 6),
-    width: (width - 120) / 3,
-    height: 2,
-    backgroundColor: '#E5E7EB',
-    zIndex: -1,
   },
 
-  section: {
+  content: { flex: 1 },
+  contentContainer: { padding: 16, paddingTop: 12 },
+
+  statusHeroCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     padding: 20,
-    marginBottom: 16,
-    elevation: 4,
+    marginBottom: 12,
+    borderLeftWidth: 4,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.06,
     shadowRadius: 8,
+    elevation: 3,
   },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1F2937',
-    marginBottom: 20,
+  statusHeroLeft: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  statusIconWrapper: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  statusHeroText: { flex: 1 },
+  statusHeroTitle: { fontSize: 17, fontWeight: '700', marginBottom: 4 },
+  statusHeroDesc: { fontSize: 13, color: '#6B7280', lineHeight: 18 },
+  estimateContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+  },
+  estimateText: { fontSize: 12, fontWeight: '600', color: '#059669' },
+
+  cancelledCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  cancelledTitle: { fontSize: 16, fontWeight: '700', color: '#DC2626' },
+  cancelledReason: { fontSize: 13, color: '#9CA3AF', marginTop: 4 },
+
+  pipelineCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  sectionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#9CA3AF',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 16,
   },
 
-  priceGrid: { flexDirection: 'row', gap: 12, marginBottom: 20 },
-  priceCard: {
-    flex: 1,
-    backgroundColor: '#F3F4F6',
-    borderRadius: 12,
-    padding: 16,
+  pipeline: {},
+  pipelineRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  pipelineLeft: { alignItems: 'center', width: 30, marginRight: 12 },
+  pipelineDot: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  priceCardLabel: { fontSize: 14, color: '#6B7280', marginBottom: 8 },
-  priceValue: { fontSize: 24, fontWeight: 'bold', color: '#059669' },
-
-  motoboyCard: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+  pipelineDotFuture: { borderColor: '#E5E7EB', backgroundColor: '#F9FAFB' },
+  pipelineDotInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#D1D5DB' },
+  pipelineLine: {
+    width: 2,
+    flex: 1,
+    backgroundColor: '#E5E7EB',
+    minHeight: 16,
+    marginTop: 2,
   },
-  motoboyAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+  pipelineContent: { flex: 1, paddingTop: 4 },
+  pipelineStepLabel: { fontSize: 14, fontWeight: '500', color: '#374151' },
+  pipelineStepSublabel: { fontSize: 12, marginTop: 2 },
+
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+
+  motoboyRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  motoboyAvatarWrap: { position: 'relative' },
+  motoboyAvatar: { width: 54, height: 54, borderRadius: 27 },
+  motoboyAvatarFallback: {
     backgroundColor: '#2563EB',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 12,
+  },
+  motoboyAvatarInitial: { fontSize: 22, fontWeight: '700', color: '#FFFFFF' },
+  motoboyOnlineBadge: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#10B981',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
   },
   motoboyInfo: { flex: 1 },
-  motoboyName: { fontSize: 18, fontWeight: '600', color: '#1F2937', marginBottom: 12 },
-
-  statsContainer: { marginBottom: 12 },
-  statRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-    backgroundColor: '#F3F4F6',
-    borderRadius: 8,
-    padding: 12,
-  },
-  statItem: { alignItems: 'center', flex: 1 },
-  statDivider: { width: 1, height: 30, backgroundColor: '#E5E7EB' },
-  statValue: { fontSize: 16, fontWeight: 'bold', color: '#059669', marginTop: 4 },
-  statLabel: { fontSize: 11, color: '#6B7280', marginTop: 2 },
-
-  motoboyDetails: { flexDirection: 'row', gap: 16, marginBottom: 12 },
-  motoboyDetail: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  motoboyDetailText: { fontSize: 14, color: '#6B7280' },
-
-  currentRating: { marginTop: 8 },
-  ratingBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    gap: 8,
-    alignSelf: 'flex-start',
-  },
-  ratingText: { fontSize: 12, fontWeight: '500' },
-
-  routeTimeline: { marginBottom: 20 },
-  routeStep: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  routeDot: { width: 16, height: 16, borderRadius: 8, marginRight: 12 },
-  routeContent: { flex: 1 },
-  routeStepLabel: { fontSize: 12, fontWeight: '600', color: '#6B7280', textTransform: 'uppercase', marginBottom: 2 },
-  routeStepTime: { fontSize: 14, fontWeight: '500', color: '#374151' },
-  routeLine: { width: 2, height: 20, backgroundColor: '#E5E7EB', marginLeft: 7, marginBottom: 8 },
-
-  addressesContainer: { gap: 12 },
-  addressCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  addressCardHighlight: {
-    borderColor: '#2563EB',
-    borderWidth: 2,
-    backgroundColor: '#EFF6FF',
-  },
-  addressIcon: {
+  motoboyName: { fontSize: 16, fontWeight: '700', color: '#111827', marginBottom: 4 },
+  motoboyMeta: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 },
+  motoboyMetaText: { fontSize: 12, color: '#6B7280' },
+  dotSep: { color: '#D1D5DB', fontSize: 12 },
+  ratingRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  ratingText: { fontSize: 12, color: '#374151', fontWeight: '500' },
+  ratingTotal: { fontSize: 12, color: '#9CA3AF' },
+  callBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
+    backgroundColor: '#EFF6FF',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
   },
-  addressInfo: { flex: 1 },
-  addressHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  addressLabel: { fontSize: 12, fontWeight: '600', color: '#6B7280', textTransform: 'uppercase' },
-  activeBadge: {
+  ratingBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 8,
+    gap: 6,
+    marginTop: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  ratingBadgeText: { fontSize: 13, fontWeight: '600' },
+
+  addressRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 4,
+  },
+  addressDot: { width: 14, height: 14, borderRadius: 7, marginTop: 3, flexShrink: 0 },
+  addressInfo: { flex: 1 },
+  addressType: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#9CA3AF',
+    letterSpacing: 0.8,
+    marginBottom: 2,
+  },
+  addressText: { fontSize: 14, color: '#111827', fontWeight: '500', lineHeight: 20 },
+  addressBairro: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+  addressConnector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 6,
+    marginVertical: 4,
+  },
+  addressConnectorLine: { width: 2, height: 20, backgroundColor: '#E5E7EB', marginRight: 10 },
+  distanceBadge: {
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
-    gap: 4,
   },
-  activeBadgeText: { fontSize: 10, fontWeight: '600', color: '#2563EB' },
-  addressText: { fontSize: 16, fontWeight: '500', color: '#374151', marginBottom: 4, lineHeight: 22 },
-  addressBairro: { fontSize: 14, color: '#6B7280' },
-
-  trackButton: {
-    marginTop: 20,
+  distanceBadgeText: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
+  trackMapBtn: {
+    marginTop: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#2563EB',
-    paddingVertical: 16,
-    borderRadius: 12,
-    gap: 12,
-  },
-  trackButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
-
-  statsGrid: { flexDirection: 'row', gap: 12 },
-  statCard: { flex: 1, backgroundColor: '#F3F4F6', borderRadius: 12, padding: 16, alignItems: 'center' },
-
-  notesCard: { backgroundColor: '#FFF7ED', borderRadius: 12, padding: 16, borderWidth: 1, borderColor: '#FED7AA' },
-  notesText: { fontSize: 16, color: '#374151', lineHeight: 24 },
-
-  actionsSection: { gap: 12, marginBottom: 20 },
-  actionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#2563EB',
-    paddingVertical: 16,
+    backgroundColor: '#111827',
+    paddingVertical: 14,
     borderRadius: 12,
     gap: 8,
   },
-  cancelActionButton: { backgroundColor: '#DC2626' },
-  actionButtonText: { fontSize: 16, fontWeight: '600', color: '#FFFFFF' },
+  trackMapBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '600' },
 
-  chatBubble: {
-    position: 'absolute',
-    right: 20,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#059669',
-    justifyContent: 'center',
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    zIndex: 1000,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
   },
-  chatBadge: {
-    position: 'absolute',
-    top: -8,
-    right: -8,
-    backgroundColor: '#DC2626',
+  summaryKey: { fontSize: 14, color: '#6B7280' },
+  summaryValue: { fontSize: 14, fontWeight: '600', color: '#111827' },
+  paymentBadge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20 },
+  paymentBadgeText: { fontSize: 13, fontWeight: '600' },
+
+  notesBox: {
+    backgroundColor: '#FFFBEB',
     borderRadius: 10,
-    minWidth: 20,
-    height: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 4,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
   },
-  chatBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: 'bold' },
+  notesText: { fontSize: 14, color: '#374151', lineHeight: 22 },
 
-  footer: { alignItems: 'center', padding: 16 },
-  footerText: { fontSize: 12, color: '#9CA3AF', textAlign: 'center', marginBottom: 4 },
+  timelineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  timelineIcon: { fontSize: 14, marginRight: 12, width: 30 },
+  timelineLabel: { flex: 1, fontSize: 14, color: '#374151' },
+  timelineTime: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+
+  actionsSection: { gap: 10, marginBottom: 16 },
+  actionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    borderRadius: 14,
+    gap: 10,
+  },
+  cancelBtn: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  cancelBtnDisabled: {
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  actionBtnText: { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
+  cancelInfoText: { textAlign: 'center', fontSize: 11, color: '#9CA3AF', marginTop: 4 },
+
+  footer: { alignItems: 'center', paddingVertical: 8 },
+  footerText: { fontSize: 11, color: '#9CA3AF', marginBottom: 4 },
 });
 
 const chatStyles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
   },
   content: {
-    height: height * 0.7,
+    height: Dimensions.get('window').height * 0.85,
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     overflow: 'hidden',
   },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    padding: 16,
+    paddingTop: 18,
   },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#1F2937' },
-  closeButton: { padding: 4 },
-
-  statusInfo: {
-    flexDirection: 'row',
+  closeButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#FFFBEB',
-    padding: 12,
-    marginHorizontal: 20,
-    marginTop: 12,
-    borderRadius: 8,
-    gap: 8,
   },
-  statusText: { flex: 1, fontSize: 12, color: '#92400E' },
+  headerCenter: { flex: 1, alignItems: 'center' },
+  headerTitle: { fontSize: 16, fontWeight: '700', color: '#FFFFFF' },
+  headerOnline: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+  onlineDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#4ADE80' },
+  headerSubtitle: { fontSize: 11, color: 'rgba(255,255,255,0.8)' },
 
   messagesContainer: { flex: 1, backgroundColor: '#F9FAFB' },
-  messagesContent: { padding: 20, paddingBottom: 40 },
+  messagesContent: { padding: 16 },
 
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 40 },
-  loadingText: { color: '#6B7280', fontSize: 16 },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  emptyText: { marginTop: 12, color: '#374151', fontSize: 16, fontWeight: '500' },
+  emptySubtext: { marginTop: 4, color: '#9CA3AF', fontSize: 14 },
 
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 60 },
-  emptyText: { marginTop: 16, color: '#6B7280', fontSize: 16, textAlign: 'center', maxWidth: '80%' },
+  messageWrapper: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    marginBottom: 12,
+  },
+  messageWrapperRight: { flexDirection: 'row-reverse' },
+  avatarMini: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  avatarMiniText: { fontSize: 12, fontWeight: '700' },
 
-  messageBubble: { maxWidth: '80%', padding: 12, borderRadius: 12, marginBottom: 12 },
-  currentUserMessage: { alignSelf: 'flex-end', backgroundColor: '#2563EB', borderBottomRightRadius: 4 },
+  messageBubble: { maxWidth: '75%', padding: 12, borderRadius: 16 },
+  currentUserMessage: { backgroundColor: '#2563EB', borderBottomRightRadius: 4 },
   otherUserMessage: {
-    alignSelf: 'flex-start',
     backgroundColor: '#FFFFFF',
     borderBottomLeftRadius: 4,
     borderWidth: 1,
     borderColor: '#E5E7EB',
   },
-  messageHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  senderInfo: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  senderName: { fontSize: 10, fontWeight: '600', color: '#6B7280' },
-  currentUserSender: { color: '#DBEAFE' },
-  messageTime: { fontSize: 10, color: '#9CA3AF' },
+  senderName: { fontSize: 11, fontWeight: '600', color: '#6B7280', marginBottom: 4 },
   messageText: { fontSize: 14, color: '#374151', lineHeight: 20 },
   currentUserMessageText: { color: '#FFFFFF' },
+  messageTime: { fontSize: 10, color: '#9CA3AF', marginTop: 4, alignSelf: 'flex-end' },
 
   inputContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     paddingHorizontal: 16,
     paddingTop: 12,
     backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
-    gap: 8,
+    gap: 10,
   },
   input: {
     flex: 1,
@@ -1641,67 +1686,91 @@ const chatStyles = StyleSheet.create({
     color: '#374151',
   },
   sendButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#2563EB',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     justifyContent: 'center',
     alignItems: 'center',
+    flexShrink: 0,
   },
-  sendButtonDisabled: { backgroundColor: '#9CA3AF' },
+  sendButtonDisabled: { opacity: 0.4 },
 
   chatClosedContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
     paddingHorizontal: 20,
-    paddingTop: 16,
-    backgroundColor: '#FEF2F2',
+    paddingTop: 14,
+    paddingBottom: 14,
+    backgroundColor: '#F3F4F6',
     borderTopWidth: 1,
-    borderTopColor: '#FECACA',
-    gap: 8,
+    borderTopColor: '#E5E7EB',
+    alignItems: 'center',
   },
-  chatClosedText: { fontSize: 14, color: '#DC2626', fontWeight: '500', textAlign: 'center' },
+  chatClosedText: { fontSize: 13, color: '#9CA3AF', fontWeight: '500' },
 });
 
 const ratingStyles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
   },
   content: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     padding: 24,
-    width: '100%',
-    maxWidth: 400,
-    alignItems: 'center',
+    paddingBottom: 36,
   },
-  title: { fontSize: 22, fontWeight: 'bold', color: '#1F2937', marginBottom: 8 },
-  subtitle: { fontSize: 16, color: '#6B7280', textAlign: 'center', marginBottom: 24 },
+  handle: {
+    width: 36,
+    height: 4,
+    backgroundColor: '#D1D5DB',
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 20,
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#111827',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  subtitle: { fontSize: 15, color: '#6B7280', textAlign: 'center', marginBottom: 24 },
 
-  optionsContainer: { width: '100%', gap: 12, marginBottom: 24 },
+  optionsContainer: { gap: 12, marginBottom: 24 },
   optionButton: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 16,
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 2,
     borderColor: '#E5E7EB',
-    gap: 12,
+    backgroundColor: '#FFFFFF',
+    gap: 14,
   },
-  optionSelected: { borderColor: '#2563EB', backgroundColor: '#EFF6FF' },
+  optionSelectedFast: { borderColor: '#059669', backgroundColor: '#F0FDF4' },
+  optionSelectedNormal: { borderColor: '#EA580C', backgroundColor: '#FFF7ED' },
+  optionIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   optionTextContainer: { flex: 1 },
-  optionText: { fontSize: 16, fontWeight: '600', color: '#374151' },
-  optionDescription: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+  optionText: { fontSize: 16, fontWeight: '600', color: '#111827' },
+  optionDescription: { fontSize: 13, color: '#6B7280', marginTop: 2 },
+  optionCheck: { width: 28, height: 28, justifyContent: 'center', alignItems: 'center' },
 
-  buttonsContainer: { flexDirection: 'row', gap: 12, width: '100%' },
-  button: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
-  cancelButton: { backgroundColor: '#F3F4F6' },
-  cancelButtonText: { color: '#374151', fontWeight: '600' },
-  submitButton: { backgroundColor: '#2563EB' },
-  submitButtonText: { color: '#FFFFFF', fontWeight: '600' },
+  submitButton: {
+    backgroundColor: '#111827',
+    paddingVertical: 16,
+    borderRadius: 14,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  submitButtonDisabled: { backgroundColor: '#D1D5DB' },
+  submitButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+  skipButton: { alignItems: 'center', paddingVertical: 8 },
+  skipButtonText: { fontSize: 14, color: '#9CA3AF' },
 });

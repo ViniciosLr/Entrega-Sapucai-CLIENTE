@@ -28,7 +28,12 @@ interface AuthContextType {
   cliente: ClienteRow | null;
   loading: boolean;
 
-  signUp: (email: string, password: string, metadata?: any) => Promise<void>;
+  signUp: (
+    email: string,
+    password: string,
+    metadata?: any
+  ) => Promise<void>;
+
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   forgotPassword: (email: string) => Promise<void>;
@@ -39,7 +44,11 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
+export function AuthProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [cliente, setCliente] = useState<ClienteRow | null>(null);
@@ -54,7 +63,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await supabase.auth.getSession();
 
       if (sessionError) {
-        console.error('Erro ao obter sessão antes de salvar push token:', sessionError);
+        console.error(
+          'Erro ao obter sessão antes de salvar push token:',
+          sessionError
+        );
         return;
       }
 
@@ -70,7 +82,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      const token = await registerForPushNotifications();
+      // ✅ Timeout para evitar travamento no APK
+      const token = await Promise.race([
+        registerForPushNotifications(),
+        new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), 7000)
+        ),
+      ]);
 
       if (!token) {
         console.log('Push token não gerado');
@@ -84,12 +102,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .maybeSingle();
 
       if (clienteError) {
-        console.error('Erro ao buscar cliente para sincronizar push token:', clienteError);
+        console.error(
+          'Erro ao buscar cliente para sincronizar push token:',
+          clienteError
+        );
         return;
       }
 
       if (!clienteRow) {
-        console.log('Cliente ainda não encontrado para salvar push token');
+        console.log(
+          'Cliente ainda não encontrado para salvar push token'
+        );
         return;
       }
 
@@ -104,7 +127,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .eq('user_id', userId);
 
       if (updateError) {
-        console.error('Erro ao salvar expo_push_token:', updateError);
+        console.error(
+          'Erro ao salvar expo_push_token:',
+          updateError
+        );
         return;
       }
 
@@ -115,7 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   // ===============================
-  // 🚫 Verifica se cliente está banido
+  // 🚫 Verifica bloqueio
   // ===============================
   const checkIfClienteIsBlocked = async (userId: string) => {
     const { data, error } = await supabase
@@ -125,13 +151,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .maybeSingle();
 
     if (error) {
-      console.error('Erro ao verificar bloqueio do cliente:', error);
+      console.error(
+        'Erro ao verificar bloqueio do cliente:',
+        error
+      );
       throw new Error('Erro ao verificar status da conta.');
     }
 
     if (data?.is_blocked) {
       const motivo =
-        data.ban_reason?.trim() || 'Sua conta foi bloqueada pela administração.';
+        data.ban_reason?.trim() ||
+        'Sua conta foi bloqueada pela administração.';
+
       throw new Error(`CONTA_BANIDA::${motivo}`);
     }
 
@@ -156,10 +187,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!up) {
         const { error: insUpErr } = await supabase
           .from('user_profiles')
-          .insert({ id: u.id, role: 'cliente' });
+          .insert({
+            id: u.id,
+            role: 'cliente',
+          });
 
         if (insUpErr) {
-          console.error('Erro ao criar user_profiles:', insUpErr);
+          console.error(
+            'Erro ao criar user_profiles:',
+            insUpErr
+          );
         }
       }
 
@@ -197,7 +234,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setCliente((c ?? null) as ClienteRow | null);
       }
     } catch (err) {
-      console.error('Erro inesperado em ensureClienteProfile:', err);
+      console.error(
+        'Erro inesperado em ensureClienteProfile:',
+        err
+      );
     }
   };
 
@@ -219,9 +259,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (data?.is_blocked) {
         const motivo =
-          data.ban_reason?.trim() || 'Sua conta foi bloqueada pela administração.';
+          data.ban_reason?.trim() ||
+          'Sua conta foi bloqueada pela administração.';
 
         await supabase.auth.signOut();
+
         setSession(null);
         setUser(null);
         setCliente(null);
@@ -232,13 +274,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setCliente((data ?? null) as ClienteRow | null);
     } catch (err) {
-      console.error('Erro inesperado ao buscar cliente:', err);
+      console.error(
+        'Erro inesperado ao buscar cliente:',
+        err
+      );
       throw err;
     }
   };
 
   // ===============================
-  // 🔄 Init + Listener
+  // 🔄 INIT + LISTENER
   // ===============================
   useEffect(() => {
     let mounted = true;
@@ -246,23 +291,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const init = async () => {
       try {
         const { data } = await supabase.auth.getSession();
+
         if (!mounted) return;
 
         if (data.session?.user) {
           try {
-            await checkIfClienteIsBlocked(data.session.user.id);
+            await checkIfClienteIsBlocked(
+              data.session.user.id
+            );
 
             if (!mounted) return;
+
             setSession(data.session);
             setUser(data.session.user);
-            await ensureClienteProfile(data.session.user);
+
+            await ensureClienteProfile(
+              data.session.user
+            );
+
+            await fetchCliente(data.session.user.id);
           } catch (err: any) {
-            const message = String(err?.message || '');
+            const message = String(
+              err?.message || ''
+            );
 
             if (message.startsWith('CONTA_BANIDA::')) {
               await supabase.auth.signOut();
 
               if (!mounted) return;
+
               setSession(null);
               setUser(null);
               setCliente(null);
@@ -272,60 +329,74 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         }
       } catch (err) {
-        console.error('Erro na inicialização da sessão:', err);
+        console.error(
+          'Erro na inicialização da sessão:',
+          err
+        );
       } finally {
-        if (mounted) setLoading(false);
+        if (mounted) {
+          setLoading(false);
+        }
       }
     };
 
     init();
 
-    const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!mounted) return;
-
-      if (!session?.user) {
-        setSession(null);
-        setUser(null);
-        setCliente(null);
-        setLoading(false);
-        return;
-      }
-
-      try {
-        await checkIfClienteIsBlocked(session.user.id);
-
-        if (!mounted) return;
-        setSession(session);
-        setUser(session.user);
-
-        if (event === 'SIGNED_IN') {
-          setLoading(true);
-          try {
-            await ensureClienteProfile(session.user);
-          } finally {
-            if (mounted) setLoading(false);
-          }
-        } else {
-          await fetchCliente(session.user.id);
-          if (mounted) setLoading(false);
-        }
-      } catch (err: any) {
-        const message = String(err?.message || '');
-
-        if (message.startsWith('CONTA_BANIDA::')) {
-          await supabase.auth.signOut();
-
+    const { data: listener } =
+      supabase.auth.onAuthStateChange(
+        async (_event, session) => {
           if (!mounted) return;
-          setSession(null);
-          setUser(null);
-          setCliente(null);
-          setLoading(false);
-        } else {
-          console.error('Erro ao validar usuário no auth state change:', err);
-          if (mounted) setLoading(false);
+
+          if (!session?.user) {
+            setSession(null);
+            setUser(null);
+            setCliente(null);
+            setLoading(false);
+            return;
+          }
+
+          try {
+            await checkIfClienteIsBlocked(
+              session.user.id
+            );
+
+            if (!mounted) return;
+
+            setSession(session);
+            setUser(session.user);
+
+            // ✅ SEM setLoading(true)
+            await ensureClienteProfile(
+              session.user
+            );
+
+            await fetchCliente(session.user.id);
+          } catch (err: any) {
+            const message = String(
+              err?.message || ''
+            );
+
+            if (message.startsWith('CONTA_BANIDA::')) {
+              await supabase.auth.signOut();
+
+              if (!mounted) return;
+
+              setSession(null);
+              setUser(null);
+              setCliente(null);
+            } else {
+              console.error(
+                'Erro ao validar usuário no auth state change:',
+                err
+              );
+            }
+          } finally {
+            if (mounted) {
+              setLoading(false);
+            }
+          }
         }
-      }
-    });
+      );
 
     return () => {
       mounted = false;
@@ -334,7 +405,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ===============================
-  // 🔔 Sincroniza push token só quando user e cliente estiverem prontos
+  // 🔔 Sync Push Token
   // ===============================
   useEffect(() => {
     if (!user?.id || !cliente?.id) return;
@@ -345,20 +416,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ===============================
   // 🔐 LOGIN
   // ===============================
-  const signIn = async (email: string, password: string) => {
+  const signIn = async (
+    email: string,
+    password: string
+  ) => {
     setLoading(true);
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      const { data, error } =
+        await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
 
       if (error) throw error;
 
       const authUser = data.user;
+
       if (!authUser) {
-        throw new Error('Usuário não encontrado após login.');
+        throw new Error(
+          'Usuário não encontrado após login.'
+        );
       }
 
       try {
@@ -376,43 +454,67 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ===============================
   // 📝 CADASTRO
   // ===============================
-  const signUp = async (email: string, password: string, metadata: any = {}) => {
+  const signUp = async (
+    email: string,
+    password: string,
+    metadata: any = {}
+  ) => {
     setLoading(true);
 
     try {
-      const { data: authData, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { data: metadata },
-      });
+      const { data: authData, error } =
+        await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: metadata,
+          },
+        });
 
       if (error) throw error;
 
       if (authData.user) {
-        await ensureClienteProfile(authData.user);
+        await ensureClienteProfile(
+          authData.user
+        );
       }
     } catch (err) {
       setLoading(false);
       throw err;
     } finally {
-      if (!session) setLoading(false);
+      if (!session) {
+        setLoading(false);
+      }
     }
   };
 
   // ===============================
   // 📩 RECUPERAR SENHA
   // ===============================
-  const forgotPassword = async (email: string) => {
+  const forgotPassword = async (
+    email: string
+  ) => {
     if (!email?.trim()) {
-      throw new Error('Informe um email válido.');
+      throw new Error(
+        'Informe um email válido.'
+      );
     }
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: 'familiamotoboy://reset-password',
-    });
+    const { error } =
+      await supabase.auth.resetPasswordForEmail(
+        email.trim(),
+        {
+          redirectTo:
+            'familiamotoboy://reset-password',
+        }
+      );
 
     if (error) {
-      console.error('Erro ao enviar email de recuperação:', error);
+      console.error(
+        'Erro ao enviar email de recuperação:',
+        error
+      );
+
       throw error;
     }
   };
@@ -422,8 +524,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ===============================
   const signOut = async () => {
     setLoading(true);
+
     try {
       await supabase.auth.signOut();
+
       setSession(null);
       setUser(null);
       setCliente(null);
@@ -435,8 +539,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ===============================
   // ✏️ UPDATE CLIENTE
   // ===============================
-  const updateCliente = async (updates: Partial<ClienteRow>) => {
+  const updateCliente = async (
+    updates: Partial<ClienteRow>
+  ) => {
     const uid = user?.id;
+
     if (!uid) return;
 
     const { data, error } = await supabase
@@ -447,16 +554,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .maybeSingle();
 
     if (error) {
-      console.error('Erro ao atualizar cliente:', error);
+      console.error(
+        'Erro ao atualizar cliente:',
+        error
+      );
+
       throw error;
     }
 
-    setCliente((data ?? null) as ClienteRow | null);
+    setCliente(
+      (data ?? null) as ClienteRow | null
+    );
   };
 
   const refreshCliente = async () => {
     const uid = user?.id;
+
     if (!uid) return;
+
     await fetchCliente(uid);
   };
 
@@ -482,6 +597,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
 export const useAuth = () => {
   const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth deve ser usado dentro de AuthProvider');
+
+  if (!ctx) {
+    throw new Error(
+      'useAuth deve ser usado dentro de AuthProvider'
+    );
+  }
+
   return ctx;
 };

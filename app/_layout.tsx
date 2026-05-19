@@ -1,7 +1,9 @@
+// app/_layout.tsx (CORRIGIDO)
 import { useEffect, useState, useRef } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { CartProvider } from '@/contexts/CartContext';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as ExpoSplashScreen from 'expo-splash-screen';
@@ -21,12 +23,29 @@ function InitialLayout() {
     if (loading) return;
 
     const inAuthGroup = segments[0] === 'auth';
+    const inCart = segments[0] === 'cart';
+    const inCheckout = segments[0] === 'checkout';
+    
+    // 🔥 PERMITE ACESSO SEM LOGIN: Home (tabs), Carrinho, Produtos, Commerces
+    const publicRoutes = ['(tabs)', 'cart', 'product', 'commerce'];
+    const currentRoute = segments[0];
+    const isPublicRoute = publicRoutes.includes(currentRoute) || !currentRoute;
 
-    if (!user && !inAuthGroup) {
+    // 🔥 NOVA LÓGICA: Só protege rotas que PRECISAM de login
+    const needsAuth = ['orders', 'profile', 'history', 'payment'].includes(currentRoute);
+    
+    if (!user && needsAuth) {
       router.replace('/auth/login');
+    } else if (!user && inCheckout) {
+      // Checkout também precisa de login
+      router.replace('/auth/login');
+    } else if (!user && inAuthGroup) {
+      // Tela de login - não faz nada
+      return;
     } else if (user && inAuthGroup) {
       router.replace('/(tabs)');
     }
+    // 🔥 QUALQUER OUTRA ROTA (home, cart, product, commerce) - DEIXA ACESSAR SEM LOGIN
   }, [user, loading, segments, router]);
 
   useEffect(() => {
@@ -71,6 +90,10 @@ function InitialLayout() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="auth" />
+      <Stack.Screen name="cart" />
+      <Stack.Screen name="checkout" />
+      <Stack.Screen name="product" />
+      <Stack.Screen name="commerce" />
       <Stack.Screen name="index" />
       <Stack.Screen name="+not-found" />
     </Stack>
@@ -111,7 +134,9 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <AppContent />
+        <CartProvider>
+          <AppContent />
+        </CartProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

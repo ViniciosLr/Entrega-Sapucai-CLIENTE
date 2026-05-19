@@ -1,72 +1,69 @@
-import { Tabs } from 'expo-router';
+// app/(tabs)/_layout.tsx
+import { Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Truck, Clock, Headset, UserCircle } from 'lucide-react-native';
+import { CustomHeader } from '@/components/CustomHeader';
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
 
   return (
-    <Tabs
-      key={insets.bottom} // 🔥 força recalcular quando o Android informa os insets
+    <Stack
       screenOptions={{
-        headerShown: false,
-        tabBarStyle: {
-          backgroundColor: '#FFFFFF',
-          borderTopWidth: 1,
-          borderTopColor: '#E5E7EB',
-
-          // ✅ SAFE AREA REAL
-          paddingBottom: insets.bottom,
-          paddingTop: 8,
-          height: 64 + insets.bottom,
-        },
-        tabBarActiveTintColor: '#2563EB',
-        tabBarInactiveTintColor: '#6B7280',
-        tabBarLabelStyle: {
-          fontSize: 12,
-          fontWeight: '600',
+        header: ({ route }) => (
+          <CustomHeader 
+            title={route.name === 'index' ? 'Início' : 
+                   route.name === 'orders' ? 'Meus Pedidos' :
+                   route.name === 'history' ? 'Histórico' :
+                   route.name === 'support' ? 'Suporte' :
+                   route.name === 'profile' ? 'Meu Perfil' : 'Familia Motoboy'}
+            showBackButton={route.name !== 'index'}
+            showCart={route.name !== 'cart'}
+          />
+        ),
+        contentStyle: {
+          backgroundColor: '#F8F9FA',
         },
       }}
     >
-      <Tabs.Screen
+      {/* HOME - Início */}
+      <Stack.Screen
         name="index"
         options={{
-          title: 'Pedidos',
-          tabBarIcon: ({ size, color }) => (
-            <Truck size={size} color={color} strokeWidth={2} />
-          ),
+          title: 'Início',
         }}
       />
 
-      <Tabs.Screen
+      {/* ORDERS - Meus Pedidos */}
+      <Stack.Screen
+        name="orders"
+        options={{
+          title: 'Pedidos',
+        }}
+      />
+
+      {/* HISTORY - Histórico */}
+      <Stack.Screen
         name="history"
         options={{
           title: 'Histórico',
-          tabBarIcon: ({ size, color }) => (
-            <Clock size={size} color={color} strokeWidth={2} />
-          ),
         }}
       />
 
-      <Tabs.Screen
+      {/* SUPPORT - Suporte */}
+      <Stack.Screen
         name="support"
         options={{
           title: 'Suporte',
-          tabBarIcon: ({ size, color }) => (
-            <Headset size={size} color={color} strokeWidth={2} />
-          ),
         }}
       />
 
-      <Tabs.Screen
+      {/* PROFILE - Perfil */}
+      <Stack.Screen
         name="profile"
         options={{
           title: 'Perfil',
-          tabBarIcon: ({ size, color }) => (
-            <UserCircle size={size} color={color} strokeWidth={2} />
-          ),
         }}
       />
-    </Tabs>
+    </Stack>
   );
 }
